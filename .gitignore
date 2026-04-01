@@ -11,3 +11,7 @@ dist-ssr
 .vinxi
 __unconfig*
 todos.json
+.pnpm-store
+.env.dev
+.worker-configuration.d.ts
+worker-configuration.d.ts
