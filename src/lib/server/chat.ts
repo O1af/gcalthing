@@ -561,9 +561,8 @@ async function submitCurrentArtifact(params: {
     sourceInputs: currentArtifact.sourceInputs,
   }
 
-  if (request.action.type === 'update' || actionOverride?.type === 'create') {
-    // pass through
-  } else if (currentArtifact.draft.proposedAction.type !== 'update' && actionOverride == null) {
+  if (request.action.type !== 'update' && actionOverride?.type !== 'create' &&
+      currentArtifact.draft.proposedAction.type !== 'update' && actionOverride == null) {
     return {
       artifact: currentArtifact,
       detail: 'Choose an existing match in the draft card before asking me to update it.',

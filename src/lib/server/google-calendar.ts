@@ -50,40 +50,32 @@ export async function listRecentEvents(
   const timeMin = subDays(now, 60).toISOString()
   const timeMax = addDays(now, 30).toISOString()
 
-  const collected: GoogleCalendarEvent[] = []
-
-  for (const calendar of calendars.slice(0, 5)) {
-    if (collected.length >= maxEvents) {
-      break
-    }
-
-    const search = new URLSearchParams({
-      maxResults: String(Math.min(40, maxEvents - collected.length)),
-      orderBy: 'startTime',
-      singleEvents: 'true',
-      timeMax,
-      timeMin,
-    })
-
-    const response = await googleFetch<{ items?: GoogleCalendarEvent[] }>(
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?${search.toString()}`,
-      accessToken,
-    )
-
-    for (const event of response.items ?? []) {
-      if (event.status === 'cancelled') {
-        continue
-      }
-
-      collected.push({
-        ...event,
-        calendarId: calendar.id,
-        calendarName: calendar.summary,
+  const perCalendar = await Promise.all(
+    calendars.slice(0, 5).map(async (calendar) => {
+      const search = new URLSearchParams({
+        maxResults: String(40),
+        orderBy: 'startTime',
+        singleEvents: 'true',
+        timeMax,
+        timeMin,
       })
-    }
-  }
 
-  return collected.slice(0, maxEvents)
+      const response = await googleFetch<{ items?: GoogleCalendarEvent[] }>(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?${search.toString()}`,
+        accessToken,
+      )
+
+      return (response.items ?? [])
+        .filter((event) => event.status !== 'cancelled')
+        .map((event) => ({
+          ...event,
+          calendarId: calendar.id,
+          calendarName: calendar.summary,
+        }))
+    }),
+  )
+
+  return perCalendar.flat().slice(0, maxEvents)
 }
 
 export async function queryFreeBusy(

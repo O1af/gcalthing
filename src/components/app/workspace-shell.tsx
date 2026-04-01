@@ -10,7 +10,6 @@ import {
   PromptInputActionAddScreenshot,
   PromptInputActionMenu,
   PromptInputActionMenuContent,
-  PromptInputActionMenuItem,
   PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputFooter,
@@ -21,7 +20,6 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { EventDraftCard, EventSuccessCard, SignInRequiredCard } from '@/components/app/event-draft-card'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -30,9 +28,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { chatArtifactSchema, type ChatArtifact, type SourceInput, type SubmitEventRequest } from '@/lib/contracts'
 import { chatTurnFn, submitEventFn } from '@/lib/server/server-fns'
-import { Bot, ImageIcon, LogIn, LogOut, MessageSquareText, Paperclip, Sparkles, Trash2 } from 'lucide-react'
+import { CalendarDays, LogIn, LogOut, Paperclip, RotateCcw } from 'lucide-react'
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
@@ -52,11 +51,11 @@ interface WorkspaceShellProps {
 
 export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   const [currentArtifact, setCurrentArtifact] = useState<ChatArtifact | null>(null)
-  const [artifactMessageId, setArtifactMessageId] = useState<string | null>(null)
   const [isSubmittingDraft, setIsSubmittingDraft] = useState(false)
   const [textSourceType, setTextSourceType] = useState<TextSourceType>('pasted-text')
   const currentArtifactRef = useRef<ChatArtifact | null>(null)
   const textSourceTypeRef = useRef<TextSourceType>(textSourceType)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const localTimeZone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     [],
@@ -97,47 +96,51 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
     )
   }, [viewer])
 
+  // Restore session on mount
   useEffect(() => {
     try {
       const raw = window.sessionStorage.getItem(STORAGE_KEY)
-      if (!raw) {
-        return
-      }
+      if (!raw) return
       const parsed = JSON.parse(raw) as {
         artifact: ChatArtifact | null
-        artifactMessageId: string | null
         messages: AppChatMessage[]
         textSourceType: TextSourceType
       }
       setMessages(parsed.messages ?? [])
       setCurrentArtifact(parsed.artifact ?? null)
-      setArtifactMessageId(parsed.artifactMessageId ?? null)
       setTextSourceType(parsed.textSourceType ?? 'pasted-text')
     } catch {
       // ignore stale session storage
     }
   }, [setMessages])
 
+  // Track latest artifact from messages
   useEffect(() => {
     const latestArtifactEntry = findLatestArtifact(messages)
-    if (!latestArtifactEntry) {
-      return
+    if (latestArtifactEntry) {
+      setCurrentArtifact(latestArtifactEntry.artifact)
     }
-    setCurrentArtifact(latestArtifactEntry.artifact)
-    setArtifactMessageId(latestArtifactEntry.messageId)
   }, [messages])
 
+  // Throttled session save
   useEffect(() => {
-    window.sessionStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        artifact: currentArtifact,
-        artifactMessageId,
-        messages,
-        textSourceType,
-      }),
-    )
-  }, [artifactMessageId, currentArtifact, messages, textSourceType])
+    clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      window.sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          artifact: currentArtifact,
+          messages,
+          textSourceType,
+        }),
+      )
+    }, 500)
+    return () => clearTimeout(saveTimerRef.current)
+  }, [currentArtifact, messages, textSourceType])
+
+  const artifactMessageId = useMemo(() => {
+    return findLatestArtifact(messages)?.messageId ?? null
+  }, [messages])
 
   const pushAssistantArtifactMessage = useCallback(
     (text: string, artifact: ChatArtifact) => {
@@ -151,16 +154,13 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
       }
       setMessages((current) => [...current, nextMessage])
       setCurrentArtifact(artifact)
-      setArtifactMessageId(nextMessage.id)
     },
     [setMessages],
   )
 
   const handleSubmitDraft = useCallback(() => {
     const artifact = currentArtifactRef.current
-    if (!artifact || artifact.kind !== 'event-draft') {
-      return
-    }
+    if (!artifact || artifact.kind !== 'event-draft') return
 
     if (!viewer) {
       pushAssistantArtifactMessage(
@@ -190,31 +190,20 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
             response.actionPerformed === 'created'
               ? 'The event is on Google Calendar.'
               : 'The existing Google Calendar event is updated.',
-            {
-              kind: 'event-success',
-              response,
-            },
+            { kind: 'event-success', response },
           )
         })
         .catch((error) => {
           toast.error(getErrorMessage(error, 'Failed to write the event to Google Calendar.'))
         })
-        .finally(() => {
-          setIsSubmittingDraft(false)
-        })
+        .finally(() => setIsSubmittingDraft(false))
     })
   }, [pushAssistantArtifactMessage, viewer])
 
   const handlePromptSubmit = useCallback(
     async (message: PromptInputMessage) => {
-      if (!message.text.trim() && message.files.length === 0) {
-        return
-      }
-
-      await sendMessage({
-        files: message.files,
-        text: message.text,
-      })
+      if (!message.text.trim() && message.files.length === 0) return
+      await sendMessage({ files: message.files, text: message.text })
     },
     [sendMessage],
   )
@@ -228,93 +217,89 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
     setMessages([])
     setCurrentArtifact(null)
     currentArtifactRef.current = null
-    setArtifactMessageId(null)
     setIsSubmittingDraft(false)
     setTextSourceType('pasted-text')
     textSourceTypeRef.current = 'pasted-text'
     window.sessionStorage.removeItem(STORAGE_KEY)
-    toast.success('Cleared the current chat.')
   }, [setMessages, stop])
 
-  return (
-    <main className="page-shell flex min-h-screen flex-col px-4 pb-8 pt-5 sm:px-6">
-      <header className="mb-4 flex items-center justify-between gap-4 rounded-[1.5rem] border border-[var(--border)] bg-[var(--panel)] px-4 py-3 shadow-[var(--shadow-panel)] backdrop-blur">
-        <div className="flex items-start gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">GCalthing</Badge>
-              <Badge variant="secondary">AI scheduling copilot</Badge>
-            </div>
-            <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-              Paste text, drop a screenshot, or keep drafting in chat.
-            </p>
-          </div>
+  const hasContent = messages.length > 0 || currentArtifact != null
 
-          <Button
-            disabled={messages.length === 0 && currentArtifact == null}
-            onClick={handleClearChat}
-            size="sm"
-            variant="outline"
-          >
-            <Trash2 className="size-4" />
-            Clear chat
-          </Button>
+  return (
+    <div className="flex min-h-screen flex-col">
+      <header className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-2.5">
+          <CalendarDays className="size-5 text-[var(--primary)]" />
+          <span className="text-sm font-semibold tracking-tight">GCalthing</span>
         </div>
 
-        {viewer ? (
-          <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium">{viewer.name}</p>
-              <p className="text-xs text-[var(--muted-foreground)]">{viewer.email}</p>
-            </div>
-            <Avatar className="size-10 border border-[var(--border)]">
-              <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
-              <AvatarFallback>
-                {viewer.name
-                  .split(' ')
-                  .map((part) => part[0])
-                  .join('')
-                  .slice(0, 2)}
-              </AvatarFallback>
-            </Avatar>
-            <Button asChild size="icon" variant="outline">
-              <a aria-label="Sign out" href="/auth/logout">
-                <LogOut className="size-4" />
-              </a>
+        <div className="flex items-center gap-2">
+          {hasContent && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={handleClearChat}
+                  size="icon"
+                  variant="ghost"
+                  className="size-8"
+                >
+                  <RotateCcw className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>New conversation</TooltipContent>
+            </Tooltip>
+          )}
+
+          {viewer ? (
+            <>
+              <div className="hidden items-center gap-2 sm:flex">
+                <Avatar className="size-7">
+                  <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
+                  <AvatarFallback className="text-xs">
+                    {viewer.name.split(' ').map((p) => p[0]).join('').slice(0, 2)}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="text-sm text-[var(--muted-foreground)]">{viewer.name.split(' ')[0]}</span>
+              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button asChild size="icon" variant="ghost" className="size-8">
+                    <a aria-label="Sign out" href="/auth/logout">
+                      <LogOut className="size-3.5" />
+                    </a>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Sign out</TooltipContent>
+              </Tooltip>
+            </>
+          ) : (
+            <Button onClick={handleSignIn} size="sm" variant="outline" className="h-8 gap-1.5 text-xs">
+              <LogIn className="size-3.5" />
+              Sign in
             </Button>
-          </div>
-        ) : (
-          <Button onClick={handleSignIn}>
-            <LogIn className="size-4" />
-            Sign in with Google
-          </Button>
-        )}
+          )}
+        </div>
       </header>
 
-      <section className="glass-panel fade-up flex flex-1 flex-col overflow-hidden rounded-[2rem] border-white/40">
-        <Conversation className="min-h-[60vh]">
-          <ConversationContent className="gap-5 p-4 sm:p-6">
-            {messages.length === 0 ? (
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pb-6">
+        <Conversation className="flex-1">
+          <ConversationContent className="gap-4 py-4">
+            {messages.length === 0 && (
               <ConversationEmptyState
-                description="Try “coffee with Alex tomorrow afternoon” or drop in an email screenshot."
-                icon={<Bot className="size-10" />}
-                title="Start with messy event info"
+                description=""
+                icon={<CalendarDays className="size-8 text-[var(--primary)]" />}
+                title=""
               >
-                <div className="mx-auto flex max-w-xl flex-col items-center gap-4 text-center">
-                  <div className="rounded-full bg-[var(--primary-soft)] p-4 text-[var(--primary)]">
-                    <Sparkles className="size-8" />
-                  </div>
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-semibold">One chat, all scheduling actions</h2>
-                    <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                      I can extract an event draft from text or images, enrich it with recent
-                      calendar context when you are signed in, and create or update the event after
-                      your review.
-                    </p>
-                  </div>
+                <div className="flex flex-col items-center gap-3 pt-[12vh] text-center">
+                  <h1 className="text-2xl font-semibold tracking-tight">
+                    What event do you need scheduled?
+                  </h1>
+                  <p className="max-w-md text-sm leading-relaxed text-[var(--muted-foreground)]">
+                    Paste text, drop a screenshot, or just describe it. I'll draft the calendar event for your review.
+                  </p>
                 </div>
               </ConversationEmptyState>
-            ) : null}
+            )}
 
             {messages.map((message) => {
               const messageText = getMessageText(message)
@@ -323,38 +308,36 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
 
               return (
                 <Message from={message.role} key={message.id}>
-                  <MessageContent className="w-full max-w-[58rem]">
+                  <MessageContent className="w-full max-w-none">
                     {message.role === 'assistant' ? (
                       messageText ? <MessageResponse>{messageText}</MessageResponse> : null
                     ) : (
-                      <div className="space-y-3">
-                        {messageText ? <p className="whitespace-pre-wrap leading-6">{messageText}</p> : null}
-                        {messageFiles.length > 0 ? (
-                          <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        {messageText && <p className="whitespace-pre-wrap leading-relaxed">{messageText}</p>}
+                        {messageFiles.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
                             {messageFiles.map((file) => (
                               <UserFilePreview key={`${message.id}:${file.url}`} file={file} />
                             ))}
                           </div>
-                        ) : null}
+                        )}
                       </div>
                     )}
 
-                    {artifact?.kind === 'event-draft' ? (
+                    {artifact?.kind === 'event-draft' && (
                       <EventDraftCard
                         artifact={artifact}
                         isSaving={isSubmittingDraft}
                         onSignIn={handleSignIn}
                         onSubmit={handleSubmitDraft}
                       />
-                    ) : null}
-
-                    {artifact?.kind === 'event-success' ? (
+                    )}
+                    {artifact?.kind === 'event-success' && (
                       <EventSuccessCard artifact={artifact} />
-                    ) : null}
-
-                    {artifact?.kind === 'sign-in-required' ? (
+                    )}
+                    {artifact?.kind === 'sign-in-required' && (
                       <SignInRequiredCard artifact={artifact} onSignIn={handleSignIn} />
-                    ) : null}
+                    )}
                   </MessageContent>
                 </Message>
               )
@@ -363,7 +346,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
           <ConversationScrollButton />
         </Conversation>
 
-        <div className="border-t border-[var(--border)] px-4 py-4 sm:px-6">
+        <div className="pt-2">
           <PromptInput
             accept="image/*"
             className="w-full"
@@ -371,53 +354,42 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
             onSubmit={handlePromptSubmit}
           >
             <PromptInputBody>
-              <PromptInputTextarea placeholder="Describe the event, paste an email, or ask me to revise the current draft..." />
+              <PromptInputTextarea placeholder="Describe an event, paste an email, or ask me to revise..." />
             </PromptInputBody>
             <PromptInputFooter>
               <PromptInputTools>
                 <PromptInputActionMenu>
-                  <PromptInputActionMenuTrigger tooltip="Add attachments">
+                  <PromptInputActionMenuTrigger tooltip="Attach">
                     <Paperclip className="size-4" />
                   </PromptInputActionMenuTrigger>
                   <PromptInputActionMenuContent>
                     <PromptInputActionAddAttachments />
                     <PromptInputActionAddScreenshot />
-                    <PromptInputActionMenuItem disabled>
-                      <MessageSquareText className="mr-2 size-4" />
-                      Chat accepts pasted text directly
-                    </PromptInputActionMenuItem>
                   </PromptInputActionMenuContent>
                 </PromptInputActionMenu>
 
-                <div className="hidden sm:block">
-                  <Select
-                    value={textSourceType}
-                    onValueChange={(value) => setTextSourceType(value as TextSourceType)}
-                  >
-                    <SelectTrigger className="h-8 w-[160px]">
-                      <SelectValue placeholder="Text source" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pasted-text">Pasted text</SelectItem>
-                      <SelectItem value="email-body">Email body</SelectItem>
-                      <SelectItem value="forwarded-email">Forwarded email</SelectItem>
-                      <SelectItem value="manual">Manual note</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="hidden items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--muted-foreground)] md:flex">
-                  <ImageIcon className="size-3.5" />
-                  Images and screenshots supported
-                </div>
+                <Select
+                  value={textSourceType}
+                  onValueChange={(value) => setTextSourceType(value as TextSourceType)}
+                >
+                  <SelectTrigger className="h-7 w-[140px] border-none bg-transparent text-xs text-[var(--muted-foreground)] shadow-none">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pasted-text">Pasted text</SelectItem>
+                    <SelectItem value="email-body">Email body</SelectItem>
+                    <SelectItem value="forwarded-email">Forwarded email</SelectItem>
+                    <SelectItem value="manual">Manual note</SelectItem>
+                  </SelectContent>
+                </Select>
               </PromptInputTools>
 
               <PromptInputSubmit onStop={stop} status={status} />
             </PromptInputFooter>
           </PromptInput>
         </div>
-      </section>
-    </main>
+      </main>
+    </div>
   )
 }
 
@@ -506,10 +478,7 @@ function createAssistantMessageStream(response: Awaited<ReturnType<typeof chatTu
 }
 
 function chunkText(text: string) {
-  if (!text) {
-    return ['']
-  }
-
+  if (!text) return ['']
   return text.match(/.{1,48}(\s|$)/g) ?? [text]
 }
 
@@ -542,9 +511,7 @@ function toSourceInputs(message: AppChatMessage, textSourceType: TextSourceType)
   }
 
   for (const part of message.parts) {
-    if (part.type !== 'file' || !part.mediaType.startsWith('image/')) {
-      continue
-    }
+    if (part.type !== 'file' || !part.mediaType.startsWith('image/')) continue
     inputs.push({
       dataUrl: part.url,
       filename: part.filename,
@@ -559,16 +526,15 @@ function toSourceInputs(message: AppChatMessage, textSourceType: TextSourceType)
 }
 
 function findLatestArtifact(messages: AppChatMessage[]) {
-  for (const message of [...messages].reverse()) {
-    const part = [...message.parts].reverse().find((item) => item.type === 'data-chatArtifact')
-    if (part) {
-      return {
-        artifact: part.data,
-        messageId: message.id,
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    for (let j = message.parts.length - 1; j >= 0; j--) {
+      const part = message.parts[j]
+      if (part.type === 'data-chatArtifact') {
+        return { artifact: part.data, messageId: message.id }
       }
     }
   }
-
   return null
 }
 
@@ -580,26 +546,21 @@ function getArtifactForMessage(
   if (artifactMessageId === message.id && currentArtifact) {
     return currentArtifact
   }
-
   const part = message.parts.find((item) => item.type === 'data-chatArtifact')
   return part?.data ?? null
 }
 
-function UserFilePreview({
-  file,
-}: {
-  file: FileUIPart
-}) {
+function UserFilePreview({ file }: { file: FileUIPart }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--secondary)]">
-      {file.mediaType.startsWith('image/') ? (
+    <div className="overflow-hidden rounded-xl border border-[var(--border)]">
+      {file.mediaType.startsWith('image/') && (
         <img
           alt={file.filename ?? 'Uploaded image'}
-          className="aspect-[4/3] w-full object-cover"
+          className="max-h-48 w-auto object-cover"
           src={file.url}
         />
-      ) : null}
-      <div className="px-3 py-2 text-sm text-[var(--muted-foreground)]">
+      )}
+      <div className="px-3 py-1.5 text-xs text-[var(--muted-foreground)]">
         {file.filename ?? file.mediaType}
       </div>
     </div>
@@ -607,9 +568,6 @@ function UserFilePreview({
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) {
-    return error.message
-  }
-
+  if (error instanceof Error && error.message) return error.message
   return fallback
 }

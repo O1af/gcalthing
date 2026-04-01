@@ -34,9 +34,11 @@ export async function buildInitialReviewDraft(params: {
   userSub: string
 }) {
   const { accessToken, extracted, input, userSub } = params
-  const calendars = await listWritableCalendars(accessToken)
+  const [calendars, factsContext] = await Promise.all([
+    listWritableCalendars(accessToken),
+    loadFactsContext(userSub),
+  ])
   const recentEvents = await listRecentEvents(accessToken, calendars)
-  const factsContext = await loadFactsContext(userSub)
 
   const attendeeGroups = resolveAttendeeGroups(extracted, recentEvents, factsContext)
   const calendarSuggestions = suggestCalendars(
@@ -48,25 +50,7 @@ export async function buildInitialReviewDraft(params: {
   )
   const existingEventMatches = detectExistingEventMatches(extracted, recentEvents, calendars)
   const selectedCalendarId = pickCalendarId(calendars, calendarSuggestions)
-  const inferredDuration = inferDuration(extracted, recentEvents, factsContext)
-  const event = {
-    allDay: false,
-    calendarId: selectedCalendarId,
-    date: extracted.date,
-    description: extracted.description,
-    durationMinutes: extracted.durationMinutes ?? inferredDuration,
-    endDate: extracted.date,
-    endTime:
-      extracted.endTime ??
-      (extracted.startTime && (extracted.durationMinutes ?? inferredDuration)
-        ? deriveEndTime(extracted.startTime, extracted.durationMinutes ?? inferredDuration ?? 60)
-        : null),
-    location: extracted.location,
-    recurrenceRule: extracted.recurrenceRule,
-    startTime: extracted.startTime,
-    timezone: extracted.timezone ?? input.localTimeZone,
-    title: extracted.title ?? '',
-  }
+  const event = buildEventFromExtraction(extracted, input.localTimeZone, selectedCalendarId, recentEvents, factsContext)
 
   return finalizeReviewDraft({
     accessToken,
@@ -88,25 +72,7 @@ export async function buildExtractionOnlyReviewDraft(params: {
 }) {
   const { extracted, input } = params
   const attendeeGroups = resolveAttendeeGroups(extracted, [], emptyFactsContext)
-  const inferredDuration = inferDuration(extracted, [], emptyFactsContext)
-  const event = {
-    allDay: false,
-    calendarId: 'primary',
-    date: extracted.date,
-    description: extracted.description,
-    durationMinutes: extracted.durationMinutes ?? inferredDuration,
-    endDate: extracted.date,
-    endTime:
-      extracted.endTime ??
-      (extracted.startTime && (extracted.durationMinutes ?? inferredDuration)
-        ? deriveEndTime(extracted.startTime, extracted.durationMinutes ?? inferredDuration ?? 60)
-        : null),
-    location: extracted.location,
-    recurrenceRule: extracted.recurrenceRule,
-    startTime: extracted.startTime,
-    timezone: extracted.timezone ?? input.localTimeZone,
-    title: extracted.title ?? '',
-  }
+  const event = buildEventFromExtraction(extracted, input.localTimeZone, 'primary', [], emptyFactsContext)
 
   return finalizeReviewDraft({
     accessToken: null,
@@ -128,27 +94,17 @@ export async function refreshReviewDraftState(params: {
   userSub: string
 }) {
   const { accessToken, request, userSub } = params
-  const calendars = await listWritableCalendars(accessToken)
+  const [calendars, factsContext] = await Promise.all([
+    listWritableCalendars(accessToken),
+    loadFactsContext(userSub),
+  ])
   const recentEvents = await listRecentEvents(accessToken, calendars)
-  const factsContext = await loadFactsContext(userSub)
 
   const extractedForSignals = mergeExtractedWithEvent(request.draft.extracted, request.draft.event)
-  const attendeeGroups = resolveAttendeeGroups(
-    extractedForSignals,
-    recentEvents,
-    factsContext,
+  const attendeeGroups = mergeAttendeeGroupState(
+    resolveAttendeeGroups(extractedForSignals, recentEvents, factsContext, request.draft.attendeeGroups),
     request.draft.attendeeGroups,
-  ).map((group) => {
-    const previous = request.draft.attendeeGroups.find((item) => item.mention === group.mention)
-    return previous
-      ? {
-          ...group,
-          approved: previous.approved,
-          manualEmail: previous.manualEmail,
-          selectedEmail: previous.manualEmail ? null : previous.selectedEmail ?? group.selectedEmail,
-        }
-      : group
-  })
+  )
 
   const nextEvent = {
     ...request.draft.event,
@@ -179,22 +135,10 @@ export async function refreshExtractionOnlyDraftState(params: {
 }) {
   const { request } = params
   const extractedForSignals = mergeExtractedWithEvent(request.draft.extracted, request.draft.event)
-  const attendeeGroups = resolveAttendeeGroups(
-    extractedForSignals,
-    [],
-    emptyFactsContext,
+  const attendeeGroups = mergeAttendeeGroupState(
+    resolveAttendeeGroups(extractedForSignals, [], emptyFactsContext, request.draft.attendeeGroups),
     request.draft.attendeeGroups,
-  ).map((group) => {
-    const previous = request.draft.attendeeGroups.find((item) => item.mention === group.mention)
-    return previous
-      ? {
-          ...group,
-          approved: previous.approved,
-          manualEmail: previous.manualEmail,
-          selectedEmail: previous.manualEmail ? null : previous.selectedEmail ?? group.selectedEmail,
-        }
-      : group
-  })
+  )
 
   return finalizeReviewDraft({
     accessToken: null,
@@ -321,8 +265,7 @@ async function maybeRunConflictCheck({
     return buildConflictCheckResult([], [])
   }
 
-  const checkedCalendarIds = [event.calendarId, ...calendarSuggestions.map((item) => item.calendarId)]
-    .filter((value, index, array) => array.indexOf(value) === index)
+  const checkedCalendarIds = [...new Set([event.calendarId, ...calendarSuggestions.map((item) => item.calendarId)])]
     .slice(0, 10)
 
   const timeMin = formatRfc3339InTimeZone(
@@ -489,4 +432,50 @@ function selectExistingEventMatch(
     )
   }
   return matches.find((match) => match.selected) ?? null
+}
+
+function buildEventFromExtraction(
+  extracted: ExtractedEventDraft,
+  localTimeZone: string,
+  calendarId: string,
+  recentEvents: GoogleCalendarEvent[],
+  factsContext: FactsContext,
+) {
+  const inferredDuration = inferDuration(extracted, recentEvents, factsContext)
+  const duration = extracted.durationMinutes ?? inferredDuration
+  return {
+    allDay: false,
+    calendarId,
+    date: extracted.date,
+    description: extracted.description,
+    durationMinutes: duration,
+    endDate: extracted.date,
+    endTime:
+      extracted.endTime ??
+      (extracted.startTime && duration
+        ? deriveEndTime(extracted.startTime, duration ?? 60)
+        : null),
+    location: extracted.location,
+    recurrenceRule: extracted.recurrenceRule,
+    startTime: extracted.startTime,
+    timezone: extracted.timezone ?? localTimeZone,
+    title: extracted.title ?? '',
+  }
+}
+
+function mergeAttendeeGroupState(
+  groups: ReviewDraft['attendeeGroups'],
+  previousGroups: ReviewDraft['attendeeGroups'],
+) {
+  return groups.map((group) => {
+    const previous = previousGroups.find((item) => item.mention === group.mention)
+    return previous
+      ? {
+          ...group,
+          approved: previous.approved,
+          manualEmail: previous.manualEmail,
+          selectedEmail: previous.manualEmail ? null : previous.selectedEmail ?? group.selectedEmail,
+        }
+      : group
+  })
 }

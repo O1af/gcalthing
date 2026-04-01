@@ -1,4 +1,3 @@
-import { addDays } from 'date-fns'
 import { z } from 'zod'
 
 export const sourceInputSchema = z.discriminatedUnion('kind', [
@@ -382,103 +381,6 @@ export type ChatTurnInput = z.infer<typeof chatTurnInputSchema>
 export type AssistantTurnResponse = z.infer<typeof assistantTurnResponseSchema>
 
 export const emptyFactsContext: FactsContext = factsContextSchema.parse({})
-
-export function createEmptyReviewDraft(localTimeZone: string): ReviewDraft {
-  return reviewDraftSchema.parse({
-    event: {
-      title: '',
-      date: null,
-      startTime: null,
-      endDate: null,
-      endTime: null,
-      durationMinutes: 60,
-      timezone: localTimeZone,
-      location: null,
-      description: null,
-      recurrenceRule: null,
-      allDay: false,
-      calendarId: 'primary',
-    },
-    extracted: {
-      title: null,
-      date: null,
-      startTime: null,
-      endTime: null,
-      durationMinutes: null,
-      timezone: localTimeZone,
-      location: null,
-      attendeeMentions: [],
-      description: null,
-      recurrenceRule: null,
-      unknownFields: ['title', 'date', 'startTime'],
-      ambiguities: [],
-      assumptions: [],
-      confidence: 0,
-      evidence: [],
-      candidates: [],
-    },
-    calendars: [],
-    calendarSuggestions: [],
-    attendeeGroups: [],
-    conflictCheck: {
-      hasConflict: false,
-      checkedCalendarIds: [],
-      intervals: [],
-    },
-    existingEventMatches: [],
-    smartSignals: [
-      {
-        label: 'Manual draft',
-        detail: 'This draft skipped AI extraction. Fill the event details and review before creating it.',
-      },
-    ],
-    reviewBlockers: [],
-    interpretationOptions: [],
-    calendarContext: {
-      calendars: [],
-      recentTitles: [],
-      frequentLocations: [],
-      attendeeDirectory: [],
-    },
-    factsContext: emptyFactsContext,
-    proposedAction: { type: 'create' },
-  })
-}
-
-export function getEventWindow(event: ReviewDraft['event']) {
-  if (!event.date) {
-    return null
-  }
-
-  if (event.allDay) {
-    const endDate = event.endDate ?? addDays(new Date(event.date), 1).toISOString().slice(0, 10)
-    return {
-      start: `${event.date}T00:00:00`,
-      end: `${endDate}T00:00:00`,
-    }
-  }
-
-  if (!event.startTime) {
-    return null
-  }
-
-  const endDate = event.endDate ?? event.date
-  const endTime = event.endTime ?? deriveEndTime(event.startTime, event.durationMinutes ?? 60)
-
-  return {
-    start: `${event.date}T${event.startTime}:00`,
-    end: `${endDate}T${endTime}:00`,
-  }
-}
-
-export function deriveEndTime(startTime: string, minutes: number) {
-  const [hours, mins] = startTime.split(':').map(Number)
-  const totalMinutes = hours * 60 + mins + minutes
-  const normalized = ((totalMinutes % (24 * 60)) + 24 * 60) % (24 * 60)
-  const endHours = Math.floor(normalized / 60)
-  const endMinutes = normalized % 60
-  return `${String(endHours).padStart(2, '0')}:${String(endMinutes).padStart(2, '0')}`
-}
 
 export function getSelectedAttendees(groups: AttendeeResolutionGroup[]) {
   return groups
