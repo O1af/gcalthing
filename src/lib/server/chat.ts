@@ -66,7 +66,7 @@ export async function runAssistantTurn(input: ChatTurnInput): Promise<AssistantT
   if (directAction) {
     const outcome = await executeLoggedTool(directAction, turnId, async () => {
       const result = await submitCurrentArtifact({
-        actionOverride: directAction === 'create_event' ? { type: 'create' } : null,
+        actionOverride: directAction === 'create_event' ? { type: 'create' as const } : null,
         currentArtifact: latestArtifact,
         session,
       })
@@ -145,6 +145,72 @@ function buildTurnTools(params: {
     return {}
   }
   const draftArtifact = initialArtifact
+  const missingDraftResult = () => ({
+    artifact: getArtifact(),
+    detail: 'There is no current draft yet.',
+  })
+
+  async function refreshCurrentDraftArtifact(): Promise<Extract<ChatArtifact, { kind: 'event-draft' }> | null> {
+    const artifact = getArtifact()
+    if (artifact?.kind !== 'event-draft') {
+      return null
+    }
+
+    return {
+      ...artifact,
+      draft: await refreshDraft({
+        draft: artifact.draft,
+        localTimeZone: input.localTimeZone,
+        session,
+      }),
+      supportsGoogleActions: Boolean(session),
+    }
+  }
+
+  function buildRefreshTool(
+    toolName: string,
+    description: string,
+    getDetail: (artifact: Extract<ChatArtifact, { kind: 'event-draft' }>) => string,
+  ) {
+    return tool({
+      description,
+      inputSchema: z.object({}),
+      execute: async () =>
+        executeLoggedTool(toolName, turnId, async () => {
+          const artifact = await refreshCurrentDraftArtifact()
+          if (!artifact) {
+            return missingDraftResult()
+          }
+
+          updateArtifact(artifact)
+          return {
+            artifact,
+            detail: getDetail(artifact),
+          }
+        }),
+    })
+  }
+
+  function buildSubmitTool(
+    toolName: string,
+    description: string,
+    actionOverride: SubmitEventRequest['action'] | null,
+  ) {
+    return tool({
+      description,
+      inputSchema: z.object({}),
+      execute: async () =>
+        executeLoggedTool(toolName, turnId, async () => {
+          const result = await submitCurrentArtifact({
+            actionOverride,
+            currentArtifact: getArtifact(),
+            session,
+          })
+          updateArtifact(result.artifact)
+          return result
+        }),
+    })
+  }
 
   const tools = {
     update_existing_draft: tool({
@@ -157,7 +223,7 @@ function buildTurnTools(params: {
           if (artifact?.kind !== 'event-draft') {
             return {
               artifact,
-              detail: 'There is no current draft to update yet.',
+              detail: 'There is no current draft yet.',
             }
           }
           const factsContext = session
@@ -200,128 +266,48 @@ function buildTurnTools(params: {
 
   return {
     ...tools,
-    fetch_recent_calendar_context: tool({
-      description: 'Refresh recent Google Calendar context for the current draft.',
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('fetch_recent_calendar_context', turnId, async () => {
-          const currentArtifact = getArtifact()
-          if (currentArtifact?.kind !== 'event-draft') {
-            return {
-              artifact: currentArtifact,
-              detail: 'There is no current draft yet.',
-            }
-          }
-          const artifact = await refreshEventDraftArtifact(currentArtifact, input.localTimeZone, session)
-          const result = {
-            artifact,
-            detail: `Loaded recent context from ${artifact.draft.calendarContext.calendars.length} writable calendars.`,
-          }
-          updateArtifact(result.artifact)
-          return result
-        }),
-    }),
-    resolve_attendee_candidates: tool({
-      description: 'Refresh attendee suggestions for the current draft.',
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('resolve_attendee_candidates', turnId, async () => {
-          const currentArtifact = getArtifact()
-          if (currentArtifact?.kind !== 'event-draft') {
-            return {
-              artifact: currentArtifact,
-              detail: 'There is no current draft yet.',
-            }
-          }
-          const artifact = await refreshEventDraftArtifact(currentArtifact, input.localTimeZone, session)
-          const result = {
-            artifact,
-            detail:
-              artifact.draft.attendeeGroups.length > 0
-                ? `Resolved ${artifact.draft.attendeeGroups.length} attendee mention${artifact.draft.attendeeGroups.length === 1 ? '' : 's'}.`
-                : 'No attendee mentions were found in the current draft.',
-          }
-          updateArtifact(result.artifact)
-          return result
-        }),
-    }),
-    check_free_busy: tool({
-      description: 'Run a Google Calendar conflict check for the current draft.',
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('check_free_busy', turnId, async () => {
-          const currentArtifact = getArtifact()
-          if (currentArtifact?.kind !== 'event-draft') {
-            return {
-              artifact: currentArtifact,
-              detail: 'There is no current draft yet.',
-            }
-          }
-          const artifact = await refreshEventDraftArtifact(currentArtifact, input.localTimeZone, session)
-          const result = {
-            artifact,
-            detail: artifact.draft.conflictCheck.hasConflict
-              ? 'A time conflict was found in the selected calendar set.'
-              : 'No conflicts were found in the checked calendars.',
-          }
-          updateArtifact(result.artifact)
-          return result
-        }),
-    }),
-    find_existing_event_matches: tool({
-      description: 'Refresh existing-event matches for the current draft.',
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('find_existing_event_matches', turnId, async () => {
-          const currentArtifact = getArtifact()
-          if (currentArtifact?.kind !== 'event-draft') {
-            return {
-              artifact: currentArtifact,
-              detail: 'There is no current draft yet.',
-            }
-          }
-          const artifact = await refreshEventDraftArtifact(currentArtifact, input.localTimeZone, session)
-          const result = {
-            artifact,
-            detail:
-              artifact.draft.existingEventMatches.length > 0
-                ? `Found ${artifact.draft.existingEventMatches.length} existing event match${artifact.draft.existingEventMatches.length === 1 ? '' : 'es'}.`
-                : 'No close existing-event match was found.',
-          }
-          updateArtifact(result.artifact)
-          return result
-        }),
-    }),
-    create_event: tool({
-      description: 'Create the current draft as a new Google Calendar event.',
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('create_event', turnId, async () => {
-          const result = await submitCurrentArtifact({
-            actionOverride: { type: 'create' },
-            currentArtifact: getArtifact(),
-            session,
-          })
-          updateArtifact(result.artifact)
-          return result
-        }),
-    }),
+    fetch_recent_calendar_context: buildRefreshTool(
+      'fetch_recent_calendar_context',
+      'Refresh recent Google Calendar context for the current draft.',
+      (artifact) =>
+        `Loaded recent context from ${artifact.draft.calendarContext.calendars.length} writable calendars.`,
+    ),
+    resolve_attendee_candidates: buildRefreshTool(
+      'resolve_attendee_candidates',
+      'Refresh attendee suggestions for the current draft.',
+      (artifact) =>
+        artifact.draft.attendeeGroups.length > 0
+          ? `Resolved ${artifact.draft.attendeeGroups.length} attendee mention${artifact.draft.attendeeGroups.length === 1 ? '' : 's'}.`
+          : 'No attendee mentions were found in the current draft.',
+    ),
+    check_free_busy: buildRefreshTool(
+      'check_free_busy',
+      'Run a Google Calendar conflict check for the current draft.',
+      (artifact) =>
+        artifact.draft.conflictCheck.hasConflict
+          ? 'A time conflict was found in the selected calendar set.'
+          : 'No conflicts were found in the checked calendars.',
+    ),
+    find_existing_event_matches: buildRefreshTool(
+      'find_existing_event_matches',
+      'Refresh existing-event matches for the current draft.',
+      (artifact) =>
+        artifact.draft.existingEventMatches.length > 0
+          ? `Found ${artifact.draft.existingEventMatches.length} existing event match${artifact.draft.existingEventMatches.length === 1 ? '' : 'es'}.`
+          : 'No close existing-event match was found.',
+    ),
+    create_event: buildSubmitTool(
+      'create_event',
+      'Create the current draft as a new Google Calendar event.',
+      { type: 'create' },
+    ),
     ...(draftArtifact.draft.existingEventMatches.length > 0
       ? {
-          update_event: tool({
-            description: 'Update the selected existing Google Calendar event from the current draft.',
-            inputSchema: z.object({}),
-            execute: async () =>
-              executeLoggedTool('update_event', turnId, async () => {
-                const result = await submitCurrentArtifact({
-                  actionOverride: null,
-                  currentArtifact: getArtifact(),
-                  session,
-                })
-                updateArtifact(result.artifact)
-                return result
-              }),
-          }),
+          update_event: buildSubmitTool(
+            'update_event',
+            'Update the selected existing Google Calendar event from the current draft.',
+            null,
+          ),
         }
       : {}),
   }
@@ -442,24 +428,6 @@ async function refreshDraft(params: {
       })
 }
 
-async function refreshEventDraftArtifact(
-  artifact: Extract<ChatArtifact, { kind: 'event-draft' }>,
-  localTimeZone: string,
-  session: Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>,
-) {
-  const draft = await refreshDraft({
-    draft: artifact.draft,
-    localTimeZone,
-    session,
-  })
-
-  return {
-    ...artifact,
-    draft,
-    supportsGoogleActions: Boolean(session),
-  }
-}
-
 async function inferDraftPatch(params: {
   currentDraft: ReviewDraft
   factsContext: FactsContext
@@ -536,7 +504,7 @@ async function submitCurrentArtifact(params: {
   actionOverride: SubmitEventRequest['action'] | null
   currentArtifact: ChatArtifact | null
   session: Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>
-}) {
+}): Promise<{ artifact: ChatArtifact | null; detail: string }> {
   const { actionOverride, currentArtifact, session } = params
   if (currentArtifact?.kind !== 'event-draft') {
     return {
@@ -547,7 +515,10 @@ async function submitCurrentArtifact(params: {
 
   if (!session) {
     return {
-      artifact: signInArtifact('Sign in with Google before creating or updating calendar events.'),
+      artifact: {
+        kind: 'sign-in-required' as const,
+        detail: 'Sign in with Google before creating or updating calendar events.',
+      },
       detail: 'Google sign-in is required before writing calendar events.',
     }
   }
@@ -646,13 +617,6 @@ function fallbackAssistantText(artifact: ChatArtifact | null) {
       return `The event was ${artifact.response.actionPerformed}.`
     case 'sign-in-required':
       return artifact.detail
-  }
-}
-
-function signInArtifact(detail: string): Extract<ChatArtifact, { kind: 'sign-in-required' }> {
-  return {
-    kind: 'sign-in-required',
-    detail,
   }
 }
 

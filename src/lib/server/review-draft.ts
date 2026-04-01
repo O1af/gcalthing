@@ -34,11 +34,7 @@ export async function buildInitialReviewDraft(params: {
   userSub: string
 }) {
   const { accessToken, extracted, input, userSub } = params
-  const [calendars, factsContext] = await Promise.all([
-    listWritableCalendars(accessToken),
-    loadFactsContext(userSub),
-  ])
-  const recentEvents = await listRecentEvents(accessToken, calendars)
+  const { calendars, factsContext, recentEvents } = await loadReviewContext(accessToken, userSub)
 
   const attendeeGroups = resolveAttendeeGroups(extracted, recentEvents, factsContext)
   const calendarSuggestions = suggestCalendars(
@@ -94,11 +90,7 @@ export async function refreshReviewDraftState(params: {
   userSub: string
 }) {
   const { accessToken, request, userSub } = params
-  const [calendars, factsContext] = await Promise.all([
-    listWritableCalendars(accessToken),
-    loadFactsContext(userSub),
-  ])
-  const recentEvents = await listRecentEvents(accessToken, calendars)
+  const { calendars, factsContext, recentEvents } = await loadReviewContext(accessToken, userSub)
 
   const extractedForSignals = mergeExtractedWithEvent(request.draft.extracted, request.draft.event)
   const attendeeGroups = mergeAttendeeGroupState(
@@ -478,4 +470,17 @@ function mergeAttendeeGroupState(
         }
       : group
   })
+}
+
+async function loadReviewContext(accessToken: string, userSub: string) {
+  const [calendars, factsContext] = await Promise.all([
+    listWritableCalendars(accessToken),
+    loadFactsContext(userSub),
+  ])
+
+  return {
+    calendars,
+    factsContext,
+    recentEvents: await listRecentEvents(accessToken, calendars),
+  }
 }

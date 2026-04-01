@@ -32,7 +32,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { chatArtifactSchema, type ChatArtifact, type SourceInput, type SubmitEventRequest } from '@/lib/contracts'
 import { chatTurnFn, submitEventFn } from '@/lib/server/server-fns'
 import { CalendarDays, LogIn, LogOut, Paperclip, RotateCcw } from 'lucide-react'
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 type AppChatMessage = UIMessage<never, { chatArtifact: ChatArtifact }>
@@ -56,16 +56,13 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   const currentArtifactRef = useRef<ChatArtifact | null>(null)
   const textSourceTypeRef = useRef<TextSourceType>(textSourceType)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const localTimeZone = useMemo(
-    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    [],
-  )
+  const localTimeZoneRef = useRef(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
 
   const transportRef = useRef(
     new WorkspaceChatTransport({
       getCurrentArtifact: () => currentArtifactRef.current,
       getTextSourceType: () => textSourceTypeRef.current,
-      getLocalTimeZone: () => localTimeZone,
+      getLocalTimeZone: () => localTimeZoneRef.current,
     }),
   )
 
@@ -138,27 +135,24 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
     return () => clearTimeout(saveTimerRef.current)
   }, [currentArtifact, messages, textSourceType])
 
-  const artifactMessageId = useMemo(() => {
-    return findLatestArtifact(messages)?.messageId ?? null
-  }, [messages])
+  const artifactMessageId = findLatestArtifact(messages)?.messageId ?? null
 
-  const pushAssistantArtifactMessage = useCallback(
-    (text: string, artifact: ChatArtifact) => {
-      const nextMessage: AppChatMessage = {
+  function pushAssistantArtifactMessage(text: string, artifact: ChatArtifact) {
+    setMessages((current) => [
+      ...current,
+      {
         id: crypto.randomUUID(),
         parts: [
           { text, type: 'text' },
           { data: artifact, type: 'data-chatArtifact' },
         ],
         role: 'assistant',
-      }
-      setMessages((current) => [...current, nextMessage])
-      setCurrentArtifact(artifact)
-    },
-    [setMessages],
-  )
+      },
+    ])
+    setCurrentArtifact(artifact)
+  }
 
-  const handleSubmitDraft = useCallback(() => {
+  function handleSubmitDraft() {
     const artifact = currentArtifactRef.current
     if (!artifact || artifact.kind !== 'event-draft') return
 
@@ -198,21 +192,18 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
         })
         .finally(() => setIsSubmittingDraft(false))
     })
-  }, [pushAssistantArtifactMessage, viewer])
+  }
 
-  const handlePromptSubmit = useCallback(
-    async (message: PromptInputMessage) => {
-      if (!message.text.trim() && message.files.length === 0) return
-      await sendMessage({ files: message.files, text: message.text })
-    },
-    [sendMessage],
-  )
+  async function handlePromptSubmit(message: PromptInputMessage) {
+    if (!message.text.trim() && message.files.length === 0) return
+    await sendMessage({ files: message.files, text: message.text })
+  }
 
-  const handleSignIn = useCallback(() => {
+  function handleSignIn() {
     window.location.href = '/auth/login?returnTo=/app'
-  }, [])
+  }
 
-  const handleClearChat = useCallback(() => {
+  function handleClearChat() {
     stop()
     setMessages([])
     setCurrentArtifact(null)
@@ -221,7 +212,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
     setTextSourceType('pasted-text')
     textSourceTypeRef.current = 'pasted-text'
     window.sessionStorage.removeItem(STORAGE_KEY)
-  }, [setMessages, stop])
+  }
 
   const hasContent = messages.length > 0 || currentArtifact != null
 

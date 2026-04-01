@@ -103,29 +103,14 @@ export async function createGoogleCalendarEvent(
   request: SubmitEventRequest,
   calendarNameById: Map<string, string>,
 ) {
-  const eventBody = buildGoogleEventPayload(request)
-  const sendUpdates = getSelectedAttendees(request.attendeeGroups).length > 0
-
-  const response = await googleFetch<{
-    id: string
-    htmlLink: string
-  }>(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(request.event.calendarId)}/events?conferenceDataVersion=1&sendUpdates=${sendUpdates ? 'all' : 'none'}`,
+  return saveGoogleCalendarEvent({
     accessToken,
-    {
-      method: 'POST',
-      body: JSON.stringify(eventBody),
-    },
-  )
-
-  return {
-    actionPerformed: 'created' as const,
+    actionPerformed: 'created',
     calendarId: request.event.calendarId,
-    calendarName: calendarNameById.get(request.event.calendarId) ?? request.event.calendarId,
-    eventId: response.id,
-    htmlLink: response.htmlLink,
-    sendUpdates,
-  }
+    calendarNameById,
+    method: 'POST',
+    request,
+  })
 }
 
 export async function updateGoogleCalendarEvent(
@@ -135,29 +120,15 @@ export async function updateGoogleCalendarEvent(
   request: SubmitEventRequest,
   calendarNameById: Map<string, string>,
 ) {
-  const eventBody = buildGoogleEventPayload(request)
-  const sendUpdates = getSelectedAttendees(request.attendeeGroups).length > 0
-
-  const response = await googleFetch<{
-    id: string
-    htmlLink: string
-  }>(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=${sendUpdates ? 'all' : 'none'}`,
+  return saveGoogleCalendarEvent({
     accessToken,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(eventBody),
-    },
-  )
-
-  return {
-    actionPerformed: 'updated' as const,
+    actionPerformed: 'updated',
     calendarId,
-    calendarName: calendarNameById.get(calendarId) ?? calendarId,
-    eventId: response.id,
-    htmlLink: response.htmlLink,
-    sendUpdates,
-  }
+    calendarNameById,
+    eventId,
+    method: 'PATCH',
+    request,
+  })
 }
 
 function buildGoogleEventPayload(request: SubmitEventRequest) {
@@ -222,6 +193,44 @@ function formatSourceInput(input: SubmitEventRequest['sourceInputs'][number]) {
   }
 
   return `- ${input.label}: ${input.filename ?? input.mediaType}`
+}
+
+async function saveGoogleCalendarEvent(params: {
+  accessToken: string
+  actionPerformed: 'created' | 'updated'
+  calendarId: string
+  calendarNameById: Map<string, string>
+  eventId?: string
+  method: 'POST' | 'PATCH'
+  request: SubmitEventRequest
+}) {
+  const { accessToken, actionPerformed, calendarId, calendarNameById, eventId, method, request } = params
+  const eventBody = buildGoogleEventPayload(request)
+  const sendUpdates = getSelectedAttendees(request.attendeeGroups).length > 0
+  const path = eventId
+    ? `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`
+    : `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
+
+  const response = await googleFetch<{
+    id: string
+    htmlLink: string
+  }>(
+    `${path}?conferenceDataVersion=1&sendUpdates=${sendUpdates ? 'all' : 'none'}`,
+    accessToken,
+    {
+      method,
+      body: JSON.stringify(eventBody),
+    },
+  )
+
+  return {
+    actionPerformed,
+    calendarId,
+    calendarName: calendarNameById.get(calendarId) ?? calendarId,
+    eventId: response.id,
+    htmlLink: response.htmlLink,
+    sendUpdates,
+  }
 }
 
 async function googleFetch<T>(
