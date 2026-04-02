@@ -1,11 +1,10 @@
 import type {
-  BuildDraftInput,
-  ExtractedEventDraft,
+  DraftIntent,
   FactsContext,
   RefreshReviewDraftRequest,
   ReviewDraft,
 } from '@/lib/contracts'
-import { emptyFactsContext, reviewDraftSchema } from '@/lib/contracts'
+import { emptyFactsContext, existingEventMatchSchema, reviewDraftSchema } from '@/lib/contracts'
 import { deriveEndTime, formatRfc3339InTimeZone, getDurationMinutes } from '@/lib/domain/date-time'
 import { normalizeText, similarity } from '@/lib/domain/text'
 import { logDebugError } from '@/lib/server/debug'
@@ -27,182 +26,146 @@ import {
   type GoogleCalendarListEntry,
 } from '@/lib/server/google-calendar'
 
-export async function buildInitialReviewDraft(params: {
+interface ExplicitUpdateTarget {
+  calendarId: string
+  eventId: string
+  start?: string | null
+  title: string
+}
+
+export async function buildSignedInReviewDraft(params: {
   accessToken: string
-  extracted: ExtractedEventDraft
-  input: BuildDraftInput
+  intent: DraftIntent
+  localTimeZone: string
+  previousDraft?: ReviewDraft | null
+  selectedUpdateTarget?: ExplicitUpdateTarget | null
   userSub: string
 }) {
-  const { accessToken, extracted, input, userSub } = params
+  const { accessToken, intent, localTimeZone, previousDraft = null, selectedUpdateTarget, userSub } = params
   const { calendars, factsContext, recentEvents } = await loadReviewContext(accessToken, userSub)
-
-  const attendeeGroups = resolveAttendeeGroups(extracted, recentEvents, factsContext)
-  const calendarSuggestions = suggestCalendars(
-    extracted,
-    calendars,
-    recentEvents,
-    factsContext,
-    attendeeGroups,
-  )
-  const existingEventMatches = detectExistingEventMatches(extracted, recentEvents, calendars)
-  const selectedCalendarId = pickCalendarId(calendars, calendarSuggestions)
-  const event = buildEventFromExtraction(extracted, input.localTimeZone, selectedCalendarId, recentEvents, factsContext)
 
   return finalizeReviewDraft({
     accessToken,
-    attendeeGroups,
     calendars,
-    existingEventMatches,
-    extracted,
-    event,
     factsContext,
-    localTimeZone: input.localTimeZone,
-    previousDraft: null,
+    intent,
+    localTimeZone,
+    previousDraft,
     recentEvents,
+    selectedUpdateTarget: selectedUpdateTarget ?? null,
   })
 }
 
-export async function buildExtractionOnlyReviewDraft(params: {
-  extracted: ExtractedEventDraft
-  input: BuildDraftInput
+export async function buildUnsignedReviewDraft(params: {
+  intent: DraftIntent
+  localTimeZone: string
+  previousDraft?: ReviewDraft | null
+  selectedUpdateTarget?: ExplicitUpdateTarget | null
 }) {
-  const { extracted, input } = params
-  const attendeeGroups = resolveAttendeeGroups(extracted, [], emptyFactsContext)
-  const event = buildEventFromExtraction(extracted, input.localTimeZone, 'primary', [], emptyFactsContext)
+  const { intent, localTimeZone, previousDraft = null, selectedUpdateTarget } = params
 
   return finalizeReviewDraft({
     accessToken: null,
-    attendeeGroups,
     calendars: [],
-    existingEventMatches: [],
-    extracted,
-    event,
     factsContext: emptyFactsContext,
-    localTimeZone: input.localTimeZone,
-    previousDraft: null,
+    intent,
+    localTimeZone,
+    previousDraft,
     recentEvents: [],
+    selectedUpdateTarget: selectedUpdateTarget ?? null,
   })
 }
 
-export async function refreshReviewDraftState(params: {
+export async function refreshSignedInReviewDraft(params: {
   accessToken: string
   request: RefreshReviewDraftRequest
   userSub: string
 }) {
   const { accessToken, request, userSub } = params
-  const { calendars, factsContext, recentEvents } = await loadReviewContext(accessToken, userSub)
+  const intent = syncIntentWithEvent(request.draft.intent, request.draft.event)
 
-  const extractedForSignals = mergeExtractedWithEvent(request.draft.extracted, request.draft.event)
-  const attendeeGroups = mergeAttendeeGroupState(
-    resolveAttendeeGroups(extractedForSignals, recentEvents, factsContext, request.draft.attendeeGroups),
-    request.draft.attendeeGroups,
-  )
-
-  const nextEvent = {
-    ...request.draft.event,
-    timezone: request.draft.event.timezone ?? request.localTimeZone,
-  }
-
-  return finalizeReviewDraft({
+  return buildSignedInReviewDraft({
     accessToken,
-    attendeeGroups,
-    calendars,
-    existingEventMatches: detectExistingEventMatches(
-      extractedForSignals,
-      recentEvents,
-      calendars,
-      request.draft.existingEventMatches,
-    ),
-    extracted: extractedForSignals,
-    event: nextEvent,
-    factsContext,
+    intent,
     localTimeZone: request.localTimeZone,
     previousDraft: request.draft,
-    recentEvents,
+    selectedUpdateTarget: selectedUpdateTargetFromDraft(request.draft),
+    userSub,
   })
 }
 
-export async function refreshExtractionOnlyDraftState(params: {
+export async function refreshUnsignedReviewDraft(params: {
   request: RefreshReviewDraftRequest
 }) {
   const { request } = params
-  const extractedForSignals = mergeExtractedWithEvent(request.draft.extracted, request.draft.event)
-  const attendeeGroups = mergeAttendeeGroupState(
-    resolveAttendeeGroups(extractedForSignals, [], emptyFactsContext, request.draft.attendeeGroups),
-    request.draft.attendeeGroups,
-  )
+  const intent = syncIntentWithEvent(request.draft.intent, request.draft.event)
 
-  return finalizeReviewDraft({
-    accessToken: null,
-    attendeeGroups,
-    calendars: [],
-    existingEventMatches: [],
-    extracted: extractedForSignals,
-    event: {
-      ...request.draft.event,
-      timezone: request.draft.event.timezone ?? request.localTimeZone,
-    },
-    factsContext: emptyFactsContext,
+  return buildUnsignedReviewDraft({
+    intent,
     localTimeZone: request.localTimeZone,
     previousDraft: request.draft,
-    recentEvents: [],
+    selectedUpdateTarget: selectedUpdateTargetFromDraft(request.draft),
   })
 }
 
-async function finalizeReviewDraft({
-  accessToken,
-  attendeeGroups,
-  calendars,
-  existingEventMatches,
-  event,
-  extracted,
-  factsContext,
-  localTimeZone,
-  previousDraft,
-  recentEvents,
-}: {
+async function finalizeReviewDraft(params: {
   accessToken: string | null
-  attendeeGroups: ReviewDraft['attendeeGroups']
   calendars: GoogleCalendarListEntry[]
-  existingEventMatches: ReviewDraft['existingEventMatches']
-  event: ReviewDraft['event']
-  extracted: ExtractedEventDraft
   factsContext: FactsContext
+  intent: DraftIntent
   localTimeZone: string
   previousDraft: ReviewDraft | null
   recentEvents: GoogleCalendarEvent[]
+  selectedUpdateTarget: ExplicitUpdateTarget | null
 }) {
+  const {
+    accessToken,
+    calendars,
+    factsContext,
+    intent,
+    localTimeZone,
+    previousDraft,
+    recentEvents,
+    selectedUpdateTarget,
+  } = params
+
+  const attendeeGroups = mergeAttendeeGroupState(
+    resolveAttendeeGroups(intent, recentEvents, factsContext, previousDraft?.attendeeGroups ?? []),
+    previousDraft?.attendeeGroups ?? [],
+  )
   const calendarSuggestions = suggestCalendars(
-    mergeExtractedWithEvent(extracted, event),
+    intent,
     calendars,
     recentEvents,
     factsContext,
     attendeeGroups,
   )
-  const normalizedEvent = {
-    ...event,
-    calendarId:
-      event.calendarId && calendars.some((calendar) => calendar.id === event.calendarId)
-        ? event.calendarId
-        : pickCalendarId(calendars, calendarSuggestions),
-    timezone: event.timezone ?? localTimeZone,
-  }
-
+  const selectedCalendarId = pickCalendarId(calendars, calendarSuggestions, intent.calendarId)
+  const event = buildEventFromIntent(intent, localTimeZone, selectedCalendarId, recentEvents, factsContext)
+  const normalizedIntent = syncIntentWithEvent(intent, event)
+  const existingEventMatches = mergeSelectedUpdateTarget(
+    detectExistingEventMatches(
+      normalizedIntent,
+      recentEvents,
+      calendars,
+      previousDraft?.existingEventMatches ?? [],
+    ),
+    selectedUpdateTarget,
+  )
   const conflictCheck = await maybeRunConflictCheck({
     accessToken,
     calendars,
     calendarSuggestions,
-    event: normalizedEvent,
+    event,
   })
-  const selectedMatch = selectExistingEventMatch(existingEventMatches, previousDraft)
-  const proposedAction =
-    previousDraft?.proposedAction.type === 'update' && selectedMatch
-      ? {
-          type: 'update' as const,
-          calendarId: selectedMatch.calendarId,
-          eventId: selectedMatch.eventId,
-        }
-      : { type: 'create' as const }
+  const selectedMatch = selectExistingEventMatch(existingEventMatches, previousDraft, selectedUpdateTarget)
+  const proposedAction = selectedMatch
+    ? {
+        type: 'update' as const,
+        calendarId: selectedMatch.calendarId,
+        eventId: selectedMatch.eventId,
+      }
+    : { type: 'create' as const }
 
   const draft = reviewDraftSchema.parse({
     attendeeGroups,
@@ -210,23 +173,13 @@ async function finalizeReviewDraft({
     calendarSuggestions,
     calendars,
     conflictCheck,
-    event: normalizedEvent,
+    event,
     existingEventMatches: existingEventMatches.map((match) => ({
       ...match,
       selected: selectedMatch?.eventId === match.eventId,
     })),
-    extracted,
     factsContext,
-    interpretationOptions:
-      extracted.candidates.length > 0
-        ? extracted.candidates.map((candidate) => ({
-            ...candidate,
-            selected:
-              previousDraft?.interpretationOptions.some(
-                (option) => option.label === candidate.label && option.selected,
-              ) ?? false,
-          }))
-        : [],
+    intent: normalizedIntent,
     proposedAction,
     reviewBlockers: [],
     smartSignals: [],
@@ -235,36 +188,25 @@ async function finalizeReviewDraft({
   draft.reviewBlockers = buildReviewBlockers(draft)
   draft.smartSignals = buildSmartSignals(draft)
   appendFactsDrivenSuggestions(draft, recentEvents, factsContext)
+
   return reviewDraftSchema.parse(draft)
 }
 
-async function maybeRunConflictCheck({
-  accessToken,
-  calendars,
-  calendarSuggestions,
-  event,
-}: {
+async function maybeRunConflictCheck(params: {
   accessToken: string | null
   calendars: GoogleCalendarListEntry[]
   calendarSuggestions: ReviewDraft['calendarSuggestions']
   event: ReviewDraft['event']
 }) {
-  if (!accessToken) {
+  const { accessToken, calendars, calendarSuggestions, event } = params
+  if (!accessToken || !event.date || !event.startTime) {
     return buildConflictCheckResult([], [])
   }
 
-  if (!event.date || !event.startTime) {
-    return buildConflictCheckResult([], [])
-  }
-
-  const checkedCalendarIds = [...new Set([event.calendarId, ...calendarSuggestions.map((item) => item.calendarId)])]
-    .slice(0, 10)
-
-  const timeMin = formatRfc3339InTimeZone(
-    event.date,
-    event.startTime,
-    event.timezone ?? 'UTC',
-  )
+  const checkedCalendarIds = [
+    ...new Set([event.calendarId, ...calendarSuggestions.map((item) => item.calendarId)]),
+  ].slice(0, 10)
+  const timeMin = formatRfc3339InTimeZone(event.date, event.startTime, event.timezone ?? 'UTC')
   const endTime = event.endTime ?? deriveEndTime(event.startTime, event.durationMinutes ?? 60)
   const timeMax = formatRfc3339InTimeZone(
     event.endDate ?? event.date,
@@ -284,11 +226,11 @@ async function maybeRunConflictCheck({
     })
     return buildConflictCheckResult([], [])
   }
+
   const intervals = checkedCalendarIds.flatMap((calendarId) =>
     (busy[calendarId]?.busy ?? []).map((interval) => ({
       calendarId,
-      calendarName:
-        calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId,
+      calendarName: calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId,
       end: interval.end,
       start: interval.start,
     })),
@@ -300,26 +242,31 @@ async function maybeRunConflictCheck({
 function pickCalendarId(
   calendars: GoogleCalendarListEntry[],
   suggestions: ReviewDraft['calendarSuggestions'],
+  requestedCalendarId: string | null,
 ) {
+  if (requestedCalendarId && calendars.some((calendar) => calendar.id === requestedCalendarId)) {
+    return requestedCalendarId
+  }
+
   const top = suggestions[0]
   const second = suggestions[1]
   if (top && top.confidence >= 0.58 && (!second || top.confidence - second.confidence >= 0.12)) {
     return top.calendarId
   }
 
-  return calendars.find((calendar) => calendar.primary)?.id ?? 'primary'
+  return calendars.find((calendar) => calendar.primary)?.id ?? requestedCalendarId ?? 'primary'
 }
 
 function inferDuration(
-  extracted: ExtractedEventDraft,
+  intent: DraftIntent,
   events: GoogleCalendarEvent[],
   factsContext: FactsContext,
 ) {
-  if (!extracted.title) {
+  if (!intent.title) {
     return 60
   }
 
-  const normalizedTitle = normalizeText(extracted.title)
+  const normalizedTitle = normalizeText(intent.title)
   const matchingDurations = events
     .filter((event) => similarity(normalizeText(event.summary ?? ''), normalizedTitle) >= 0.74)
     .map((event) => getDurationMinutes(event))
@@ -354,7 +301,7 @@ function appendFactsDrivenSuggestions(
   factsContext: FactsContext,
 ) {
   if (!draft.event.location) {
-    const location = suggestLocation(draft.extracted, events, factsContext)
+    const location = suggestLocation(draft.intent, events, factsContext)
     if (location) {
       draft.smartSignals.push({
         label: 'Location candidate',
@@ -363,7 +310,7 @@ function appendFactsDrivenSuggestions(
     }
   }
 
-  if (!draft.extracted.durationMinutes && draft.event.durationMinutes) {
+  if (!draft.intent.durationMinutes && draft.event.durationMinutes) {
     draft.smartSignals.unshift({
       label: 'Duration suggestion',
       detail: `Suggested ${draft.event.durationMinutes} minutes from recent history and shared facts.`,
@@ -372,15 +319,15 @@ function appendFactsDrivenSuggestions(
 }
 
 function suggestLocation(
-  extracted: ExtractedEventDraft,
+  intent: DraftIntent,
   events: GoogleCalendarEvent[],
   factsContext: FactsContext,
 ) {
-  if (!extracted.title) {
+  if (!intent.title) {
     return null
   }
 
-  const normalizedTitle = normalizeText(extracted.title)
+  const normalizedTitle = normalizeText(intent.title)
   const recentLocation = events.find(
     (event) => event.location && similarity(normalizeText(event.summary ?? ''), normalizedTitle) >= 0.8,
   )?.location
@@ -398,60 +345,66 @@ function suggestLocation(
   )
 }
 
-function mergeExtractedWithEvent(extracted: ExtractedEventDraft, event: ReviewDraft['event']) {
+function syncIntentWithEvent(intent: DraftIntent, event: ReviewDraft['event']) {
   return {
-    ...extracted,
+    ...intent,
+    allDay: event.allDay,
+    calendarId: event.calendarId,
     date: event.date,
     description: event.description,
     durationMinutes: event.durationMinutes,
+    endDate: event.endDate,
     endTime: event.endTime,
     location: event.location,
     recurrenceRule: event.recurrenceRule,
     startTime: event.startTime,
     timezone: event.timezone,
-    title: event.title || extracted.title,
-  } satisfies ExtractedEventDraft
+    title: event.title || intent.title,
+  } satisfies DraftIntent
 }
 
 function selectExistingEventMatch(
   matches: ReviewDraft['existingEventMatches'],
   previousDraft: ReviewDraft | null,
+  selectedUpdateTarget: ExplicitUpdateTarget | null,
 ) {
+  if (selectedUpdateTarget) {
+    return matches.find((match) => match.eventId === selectedUpdateTarget.eventId) ?? null
+  }
+
   const previousAction = previousDraft?.proposedAction
   if (previousAction?.type === 'update') {
-    return (
-      matches.find((match) => match.eventId === previousAction.eventId) ?? matches[0] ?? null
-    )
+    return matches.find((match) => match.eventId === previousAction.eventId) ?? matches[0] ?? null
   }
+
   return matches.find((match) => match.selected) ?? null
 }
 
-function buildEventFromExtraction(
-  extracted: ExtractedEventDraft,
+function buildEventFromIntent(
+  intent: DraftIntent,
   localTimeZone: string,
   calendarId: string,
   recentEvents: GoogleCalendarEvent[],
   factsContext: FactsContext,
 ) {
-  const inferredDuration = inferDuration(extracted, recentEvents, factsContext)
-  const duration = extracted.durationMinutes ?? inferredDuration
+  const inferredDuration = inferDuration(intent, recentEvents, factsContext)
+  const duration = intent.durationMinutes ?? inferredDuration
+
   return {
-    allDay: false,
+    allDay: intent.allDay,
     calendarId,
-    date: extracted.date,
-    description: extracted.description,
+    date: intent.date,
+    description: intent.description,
     durationMinutes: duration,
-    endDate: extracted.date,
+    endDate: intent.endDate ?? intent.date,
     endTime:
-      extracted.endTime ??
-      (extracted.startTime && duration
-        ? deriveEndTime(extracted.startTime, duration ?? 60)
-        : null),
-    location: extracted.location,
-    recurrenceRule: extracted.recurrenceRule,
-    startTime: extracted.startTime,
-    timezone: extracted.timezone ?? localTimeZone,
-    title: extracted.title ?? '',
+      intent.endTime ??
+      (intent.allDay || !intent.startTime ? null : deriveEndTime(intent.startTime, duration)),
+    location: intent.location,
+    recurrenceRule: intent.recurrenceRule,
+    startTime: intent.startTime,
+    timezone: intent.timezone ?? localTimeZone,
+    title: intent.title ?? '',
   }
 }
 
@@ -470,6 +423,55 @@ function mergeAttendeeGroupState(
         }
       : group
   })
+}
+
+function mergeSelectedUpdateTarget(
+  matches: ReviewDraft['existingEventMatches'],
+  selectedUpdateTarget: ExplicitUpdateTarget | null,
+) {
+  if (!selectedUpdateTarget) {
+    return matches
+  }
+
+  const existingMatch = matches.find((match) => match.eventId === selectedUpdateTarget.eventId)
+  if (existingMatch) {
+    return matches.map((match) => ({
+      ...match,
+      selected: match.eventId === selectedUpdateTarget.eventId,
+    }))
+  }
+
+  const selectedMatch = existingEventMatchSchema.parse({
+    calendarId: selectedUpdateTarget.calendarId,
+    calendarName: selectedUpdateTarget.calendarId,
+    eventId: selectedUpdateTarget.eventId,
+    reason: 'Explicitly selected by the agent for update.',
+    score: 1,
+    selected: true,
+    start: selectedUpdateTarget.start ?? null,
+    title: selectedUpdateTarget.title,
+  })
+
+  return [selectedMatch, ...matches].slice(0, 5)
+}
+
+function selectedUpdateTargetFromDraft(draft: ReviewDraft): ExplicitUpdateTarget | null {
+  if (draft.proposedAction.type !== 'update') {
+    return null
+  }
+
+  const updateAction = draft.proposedAction
+
+  const selectedMatch = draft.existingEventMatches.find(
+    (match) => match.eventId === updateAction.eventId,
+  )
+
+  return {
+    calendarId: updateAction.calendarId,
+    eventId: updateAction.eventId,
+    start: selectedMatch?.start ?? null,
+    title: selectedMatch?.title ?? (draft.event.title || 'Untitled event'),
+  }
 }
 
 async function loadReviewContext(accessToken: string, userSub: string) {

@@ -54,7 +54,7 @@ export interface SessionContext {
   tokens: StoredTokens
 }
 
-export async function createGoogleAuthorizationUrl(returnTo = '/app') {
+export async function createGoogleAuthorizationUrl(returnTo = '/') {
   const env = getServerEnv()
   const state = createRandomString()
   const codeVerifier = createRandomString(48)
@@ -137,7 +137,7 @@ export async function handleGoogleOAuthCallback(code: string, state: string) {
   })
 
   return {
-    returnTo: oauthState.returnTo || '/app',
+    returnTo: oauthState.returnTo || '/',
     profile,
   }
 }

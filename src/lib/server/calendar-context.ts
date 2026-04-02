@@ -5,8 +5,8 @@ import type {
   CalendarContextSummary,
   CalendarSuggestion,
   ConflictCheckResult,
+  DraftIntent,
   ExistingEventMatch,
-  ExtractedEventDraft,
   FactsContext,
   ReviewDraft,
 } from '@/lib/contracts'
@@ -16,7 +16,7 @@ import {
   conflictCheckResultSchema,
   getSelectedAttendees,
 } from '@/lib/contracts'
-import { normalizePerson, normalizeText, similarity, clamp } from '@/lib/domain/text'
+import { clamp, normalizePerson, normalizeText, similarity } from '@/lib/domain/text'
 
 interface AttendeeAggregate {
   displayName: string
@@ -58,8 +58,7 @@ export function summarizeCalendarContext(
         count: (current?.count ?? 0) + 1,
         displayName: attendee.displayName || current?.displayName || attendee.email,
         email: attendee.email,
-        lastSeenAt:
-          !current || current.lastSeenAt < lastSeenAt ? lastSeenAt : current.lastSeenAt,
+        lastSeenAt: !current || current.lastSeenAt < lastSeenAt ? lastSeenAt : current.lastSeenAt,
       })
       attendeeDirectory.get(key)?.calendarIds.add(event.calendarId)
     }
@@ -94,14 +93,14 @@ export function summarizeCalendarContext(
 }
 
 export function resolveAttendeeGroups(
-  extracted: ExtractedEventDraft,
+  intent: DraftIntent,
   events: GoogleCalendarEvent[],
   factsContext: FactsContext,
   previousGroups: AttendeeResolutionGroup[] = [],
 ) {
   const directory = buildAttendeeDirectory(events)
 
-  return extracted.attendeeMentions.map((mention) => {
+  return intent.attendeeMentions.map((mention) => {
     const previousGroup = previousGroups.find(
       (group) => normalizePerson(group.mention) === normalizePerson(mention.name),
     )
@@ -114,8 +113,9 @@ export function resolveAttendeeGroups(
       )
       .map<AttendeeCandidate>((fact) => ({
         mention: mention.name,
-        displayName: previousGroup?.candidates.find((candidate) => candidate.email === fact.value)
-          ?.displayName ?? mention.name,
+        displayName:
+          previousGroup?.candidates.find((candidate) => candidate.email === fact.value)
+            ?.displayName ?? mention.name,
         email: fact.value,
         confidence: Math.min(0.94, Math.max(fact.confidence, 0.72)),
         reasons: ['Matched an active shared fact from prior confirmed event reviews'],
@@ -163,14 +163,14 @@ export function resolveAttendeeGroups(
       .sort((left, right) => right.confidence - left.confidence)
       .slice(0, 5)
 
-    const preferredSelected =
-      previousGroup?.manualEmail
-        ? null
-        : previousGroup?.selectedEmail && candidates.some((candidate) => candidate.email === previousGroup.selectedEmail)
-          ? previousGroup.selectedEmail
-          : candidates[0]?.autoSelected
-            ? candidates[0].email
-            : null
+    const preferredSelected = previousGroup?.manualEmail
+      ? null
+      : previousGroup?.selectedEmail &&
+          candidates.some((candidate) => candidate.email === previousGroup.selectedEmail)
+        ? previousGroup.selectedEmail
+        : candidates[0]?.autoSelected
+          ? candidates[0].email
+          : null
 
     return {
       mention: mention.name,
@@ -179,21 +179,24 @@ export function resolveAttendeeGroups(
       manualEmail: previousGroup?.manualEmail ?? null,
       approved:
         previousGroup?.approved ??
-        Boolean(preferredSelected && candidates.find((candidate) => candidate.email === preferredSelected)?.autoSelected),
+        Boolean(
+          preferredSelected &&
+            candidates.find((candidate) => candidate.email === preferredSelected)?.autoSelected,
+        ),
       candidates,
     } satisfies AttendeeResolutionGroup
   })
 }
 
 export function suggestCalendars(
-  extracted: ExtractedEventDraft,
+  intent: DraftIntent,
   calendars: GoogleCalendarListEntry[],
   events: GoogleCalendarEvent[],
   factsContext: FactsContext,
   attendeeGroups: AttendeeResolutionGroup[],
 ): CalendarSuggestion[] {
-  const titleHint = normalizeText(extracted.title ?? '')
-  const locationHint = normalizeText(extracted.location ?? '')
+  const titleHint = normalizeText(intent.title ?? '')
+  const locationHint = normalizeText(intent.location ?? '')
   const selectedAttendees = getSelectedAttendees(attendeeGroups)
   const activeFacts = factsContext.facts.filter((fact) => fact.status === 'active')
 
@@ -245,19 +248,19 @@ export function suggestCalendars(
 }
 
 export function detectExistingEventMatches(
-  extracted: ExtractedEventDraft,
+  intent: DraftIntent,
   events: GoogleCalendarEvent[],
   calendars: GoogleCalendarListEntry[],
   previousMatches: ExistingEventMatch[] = [],
 ) {
-  const titleHint = normalizeText(extracted.title ?? '')
-  const extractedDate = extracted.date
+  const titleHint = normalizeText(intent.title ?? '')
+  const intentDate = intent.date
 
   return events
     .map((event) => {
       const score = similarity(titleHint, normalizeText(event.summary ?? ''))
       const eventStart = getEventStart(event)
-      const sameDay = extractedDate && eventStart ? eventStart.startsWith(extractedDate) : false
+      const sameDay = intentDate && eventStart ? eventStart.startsWith(intentDate) : false
       const similar = score >= 0.72 && (sameDay || score >= 0.88)
       if (!similar) {
         return null
@@ -269,10 +272,9 @@ export function detectExistingEventMatches(
           calendars.find((calendar) => calendar.id === event.calendarId)?.summary ??
           event.calendarName,
         eventId: event.id,
-        reason:
-          sameDay
-            ? 'A similar title exists on the same day'
-            : 'A very similar title exists in recent calendar history',
+        reason: sameDay
+          ? 'A similar title exists on the same day'
+          : 'A very similar title exists in recent calendar history',
         score,
         selected: previousMatches.some((match) => match.eventId === event.id),
         start: eventStart ?? null,
@@ -290,18 +292,16 @@ export function buildSmartSignals(reviewDraft: ReviewDraft) {
       label: 'Calendar suggestion',
       detail: `${suggestion.summary}: ${suggestion.reasons[0] ?? 'best overall match'}`,
     })),
-    ...reviewDraft.attendeeGroups
-      .slice(0, 2)
-      .flatMap((group) =>
-        group.candidates[0]
-          ? [
-              {
-                label: 'Attendee match',
-                detail: `${group.candidates[0].displayName}: ${group.candidates[0].reasons[0] ?? 'matched from recent history'}`,
-              },
-            ]
-          : [],
-      ),
+    ...reviewDraft.attendeeGroups.slice(0, 2).flatMap((group) =>
+      group.candidates[0]
+        ? [
+            {
+              label: 'Attendee match',
+              detail: `${group.candidates[0].displayName}: ${group.candidates[0].reasons[0] ?? 'matched from recent history'}`,
+            },
+          ]
+        : [],
+    ),
     ...reviewDraft.factsContext.promptSummary.slice(0, 2).map((summary) => ({
       label: 'Shared fact',
       detail: summary,
@@ -325,8 +325,11 @@ export function buildSmartSignals(reviewDraft: ReviewDraft) {
   return signals.slice(0, 6)
 }
 
-export function buildReviewBlockers(reviewDraft: Pick<ReviewDraft, 'event' | 'extracted' | 'conflictCheck' | 'existingEventMatches'>) {
+export function buildReviewBlockers(
+  reviewDraft: Pick<ReviewDraft, 'event' | 'conflictCheck' | 'existingEventMatches'>,
+) {
   const blockers = []
+
   if (!reviewDraft.event.title.trim()) {
     blockers.push({
       code: 'missing-title',
@@ -351,14 +354,6 @@ export function buildReviewBlockers(reviewDraft: Pick<ReviewDraft, 'event' | 'ex
       severity: 'blocking' as const,
     })
   }
-  if (reviewDraft.extracted.ambiguities.length > 0) {
-    blockers.push({
-      code: 'ambiguity-present',
-      label: 'Ambiguity remains',
-      detail: 'Review the interpretation candidates and source evidence before submitting.',
-      severity: 'warning' as const,
-    })
-  }
   if (reviewDraft.conflictCheck.hasConflict) {
     blockers.push({
       code: 'calendar-conflict',
@@ -375,6 +370,7 @@ export function buildReviewBlockers(reviewDraft: Pick<ReviewDraft, 'event' | 'ex
       severity: 'warning' as const,
     })
   }
+
   return blockers
 }
 

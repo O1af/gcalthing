@@ -18,21 +18,7 @@ export const sourceInputSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
-export const normalizedInputSchema = z.object({
-  id: z.string(),
-  kind: z.enum(['text', 'image']),
-  label: z.string(),
-  sourceType: z.string(),
-  text: z.string().nullable(),
-  mediaType: z.string().nullable(),
-  dataUrl: z.string().nullable(),
-})
-
-export const draftEvidenceSchema = z.object({
-  field: z.string(),
-  snippet: z.string(),
-  sourceInputId: z.string().nullable().default(null),
-})
+export const executionModeSchema = z.enum(['approval-first', 'direct-execution'])
 
 export const draftAttendeeMentionSchema = z.object({
   name: z.string().min(1),
@@ -40,88 +26,20 @@ export const draftAttendeeMentionSchema = z.object({
   optional: z.boolean().default(false),
 })
 
-export const draftCandidateSchema = z.object({
-  label: z.string(),
-  confidence: z.number().min(0).max(1),
-  reasoning: z.string(),
-  title: z.string().nullable().default(null),
-  date: z.string().nullable().default(null),
-  startTime: z.string().nullable().default(null),
-  endTime: z.string().nullable().default(null),
-  durationMinutes: z.number().int().positive().nullable().default(null),
-  timezone: z.string().nullable().default(null),
-  location: z.string().nullable().default(null),
-})
-
-export const extractedEventDraftSchema = z.object({
-  title: z.string().nullable().default(null),
-  date: z.string().nullable().default(null),
-  startTime: z.string().nullable().default(null),
-  endTime: z.string().nullable().default(null),
-  durationMinutes: z.number().int().positive().nullable().default(null),
-  timezone: z.string().nullable().default(null),
-  location: z.string().nullable().default(null),
+export const draftIntentSchema = z.object({
+  allDay: z.boolean().default(false),
   attendeeMentions: z.array(draftAttendeeMentionSchema).default([]),
+  calendarId: z.string().nullable().default(null),
+  date: z.string().nullable().default(null),
   description: z.string().nullable().default(null),
+  durationMinutes: z.number().int().positive().nullable().default(null),
+  endDate: z.string().nullable().default(null),
+  endTime: z.string().nullable().default(null),
+  location: z.string().nullable().default(null),
   recurrenceRule: z.string().nullable().default(null),
-  unknownFields: z.array(z.string()).default([]),
-  ambiguities: z.array(z.string()).default([]),
-  assumptions: z.array(z.string()).default([]),
-  confidence: z.number().min(0).max(1),
-  evidence: z.array(draftEvidenceSchema).default([]),
-  candidates: z.array(draftCandidateSchema).default([]),
-})
-
-const llmNullableStringSchema = z.union([z.string(), z.null()])
-const llmNullableEmailSchema = z.union([z.string().email(), z.null()])
-const llmNullablePositiveIntegerSchema = z.union([z.number().int().positive(), z.null()])
-
-export const llmDraftAttendeeMentionSchema = z.object({
-  name: z.string().min(1),
-  email: llmNullableEmailSchema,
-  optional: z.boolean(),
-})
-
-export const llmDraftEvidenceSchema = z.object({
-  field: z.string(),
-  snippet: z.string(),
-  sourceInputId: llmNullableStringSchema,
-})
-
-export const llmDraftCandidateSchema = z.object({
-  label: z.string(),
-  confidence: z.number().min(0).max(1),
-  reasoning: z.string(),
-  title: llmNullableStringSchema,
-  date: llmNullableStringSchema,
-  startTime: llmNullableStringSchema,
-  endTime: llmNullableStringSchema,
-  durationMinutes: llmNullablePositiveIntegerSchema,
-  timezone: llmNullableStringSchema,
-  location: llmNullableStringSchema,
-})
-
-export const llmExtractedEventDraftSchema = z.object({
-  title: llmNullableStringSchema,
-  date: llmNullableStringSchema,
-  startTime: llmNullableStringSchema,
-  endTime: llmNullableStringSchema,
-  durationMinutes: llmNullablePositiveIntegerSchema,
-  timezone: llmNullableStringSchema,
-  location: llmNullableStringSchema,
-  attendeeMentions: z.array(llmDraftAttendeeMentionSchema),
-  description: llmNullableStringSchema,
-  recurrenceRule: llmNullableStringSchema,
-  unknownFields: z.array(z.string()),
-  ambiguities: z.array(z.string()),
-  assumptions: z.array(z.string()),
-  confidence: z.number().min(0).max(1),
-  evidence: z.array(llmDraftEvidenceSchema),
-  candidates: z.array(llmDraftCandidateSchema),
-})
-
-export const interpretationOptionSchema = draftCandidateSchema.extend({
-  selected: z.boolean().default(false),
+  startTime: z.string().nullable().default(null),
+  timezone: z.string().nullable().default(null),
+  title: z.string().nullable().default(null),
 })
 
 export const attendeeCandidateSchema = z.object({
@@ -276,24 +194,18 @@ export const proposedActionSchema = z.discriminatedUnion('type', [
 ])
 
 export const reviewDraftSchema = z.object({
-  event: reviewEventSchema,
-  extracted: extractedEventDraftSchema,
-  calendars: z.array(calendarOptionSchema).default([]),
-  calendarSuggestions: z.array(calendarSuggestionSchema).default([]),
   attendeeGroups: z.array(attendeeResolutionGroupSchema).default([]),
-  conflictCheck: conflictCheckResultSchema,
-  existingEventMatches: z.array(existingEventMatchSchema).default([]),
-  smartSignals: z.array(z.object({ label: z.string(), detail: z.string() })).default([]),
-  reviewBlockers: z.array(reviewBlockerSchema).default([]),
-  interpretationOptions: z.array(interpretationOptionSchema).default([]),
   calendarContext: calendarContextSummarySchema,
+  calendarSuggestions: z.array(calendarSuggestionSchema).default([]),
+  calendars: z.array(calendarOptionSchema).default([]),
+  conflictCheck: conflictCheckResultSchema,
+  event: reviewEventSchema,
+  existingEventMatches: z.array(existingEventMatchSchema).default([]),
   factsContext: factsContextSchema,
+  intent: draftIntentSchema,
   proposedAction: proposedActionSchema.default({ type: 'create' }),
-})
-
-export const buildDraftInputSchema = z.object({
-  inputs: z.array(sourceInputSchema).min(1),
-  localTimeZone: z.string(),
+  reviewBlockers: z.array(reviewBlockerSchema).default([]),
+  smartSignals: z.array(z.object({ label: z.string(), detail: z.string() })).default([]),
 })
 
 export const refreshReviewDraftRequestSchema = z.object({
@@ -306,31 +218,19 @@ export const submitEventRequestSchema = z.object({
   event: reviewEventSchema,
   attendeeGroups: z.array(attendeeResolutionGroupSchema).default([]),
   sourceInputs: z.array(sourceInputSchema).default([]),
-  extracted: extractedEventDraftSchema.optional(),
   appendSourceDetails: z.boolean().default(true),
 })
 
 export const submitEventResponseSchema = z.object({
   calendarId: z.string(),
   eventId: z.string(),
-  htmlLink: z.string().url(),
+  htmlLink: z.string().url().nullable().default(null),
   sendUpdates: z.boolean(),
-  actionPerformed: z.enum(['created', 'updated']),
+  actionPerformed: z.enum(['created', 'updated', 'deleted']),
   factChangesApplied: factChangeSetSchema,
 })
 
-export const chatHistoryMessageSchema = z.object({
-  role: z.enum(['user', 'assistant']),
-  text: z.string(),
-})
-
-export const chatArtifactSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('event-draft'),
-    draft: reviewDraftSchema,
-    sourceInputs: z.array(sourceInputSchema).default([]),
-    supportsGoogleActions: z.boolean().default(false),
-  }),
+export const chatNoticeSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('event-success'),
     response: submitEventResponseSchema,
@@ -341,24 +241,10 @@ export const chatArtifactSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
-export const chatTurnInputSchema = z.object({
-  currentArtifact: chatArtifactSchema.nullable().default(null),
-  history: z.array(chatHistoryMessageSchema).default([]),
-  latestInputs: z.array(sourceInputSchema).default([]),
-  localTimeZone: z.string(),
-})
-
-export const assistantTurnResponseSchema = z.object({
-  artifact: chatArtifactSchema.nullable().default(null),
-  text: z.string(),
-})
-
 export type SourceInput = z.infer<typeof sourceInputSchema>
-export type NormalizedInput = z.infer<typeof normalizedInputSchema>
-export type DraftEvidence = z.infer<typeof draftEvidenceSchema>
-export type DraftCandidate = z.infer<typeof draftCandidateSchema>
-export type ExtractedEventDraft = z.infer<typeof extractedEventDraftSchema>
-export type InterpretationOption = z.infer<typeof interpretationOptionSchema>
+export type ExecutionMode = z.infer<typeof executionModeSchema>
+export type DraftAttendeeMention = z.infer<typeof draftAttendeeMentionSchema>
+export type DraftIntent = z.infer<typeof draftIntentSchema>
 export type AttendeeCandidate = z.infer<typeof attendeeCandidateSchema>
 export type AttendeeResolutionGroup = z.infer<typeof attendeeResolutionGroupSchema>
 export type CalendarSuggestion = z.infer<typeof calendarSuggestionSchema>
@@ -371,14 +257,10 @@ export type FactsContext = z.infer<typeof factsContextSchema>
 export type FactChange = z.infer<typeof factChangeSchema>
 export type FactChangeSet = z.infer<typeof factChangeSetSchema>
 export type ProposedAction = z.infer<typeof proposedActionSchema>
-export type BuildDraftInput = z.infer<typeof buildDraftInputSchema>
 export type RefreshReviewDraftRequest = z.infer<typeof refreshReviewDraftRequestSchema>
 export type SubmitEventRequest = z.infer<typeof submitEventRequestSchema>
 export type SubmitEventResponse = z.infer<typeof submitEventResponseSchema>
-export type ChatHistoryMessage = z.infer<typeof chatHistoryMessageSchema>
-export type ChatArtifact = z.infer<typeof chatArtifactSchema>
-export type ChatTurnInput = z.infer<typeof chatTurnInputSchema>
-export type AssistantTurnResponse = z.infer<typeof assistantTurnResponseSchema>
+export type ChatNotice = z.infer<typeof chatNoticeSchema>
 
 export const emptyFactsContext: FactsContext = factsContextSchema.parse({})
 

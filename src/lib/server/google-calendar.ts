@@ -29,6 +29,7 @@ export interface GoogleCalendarEvent {
   end?: { date?: string; dateTime?: string; timeZone?: string }
   calendarId: string
   calendarName: string
+  htmlLink?: string
 }
 
 export async function listWritableCalendars(accessToken: string) {
@@ -76,6 +77,82 @@ export async function listRecentEvents(
   )
 
   return perCalendar.flat().slice(0, maxEvents)
+}
+
+export async function searchGoogleCalendarEvents(params: {
+  accessToken: string
+  calendarIds?: string[]
+  calendars: GoogleCalendarListEntry[]
+  limit?: number
+  query?: string
+  timeMax?: string
+  timeMin?: string
+}) {
+  const {
+    accessToken,
+    calendarIds,
+    calendars,
+    limit = 20,
+    query,
+    timeMax,
+    timeMin,
+  } = params
+  const targetCalendars = selectTargetCalendars(calendars, calendarIds)
+  const perCalendar = await Promise.all(
+    targetCalendars.map(async (calendar) => {
+      const search = new URLSearchParams({
+        maxResults: String(Math.max(Math.min(limit, 50), 1)),
+        orderBy: 'startTime',
+        singleEvents: 'true',
+      })
+
+      if (query?.trim()) {
+        search.set('q', query.trim())
+      }
+      if (timeMin) {
+        search.set('timeMin', timeMin)
+      }
+      if (timeMax) {
+        search.set('timeMax', timeMax)
+      }
+
+      const response = await googleFetch<{ items?: GoogleCalendarEvent[] }>(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?${search.toString()}`,
+        accessToken,
+      )
+
+      return (response.items ?? [])
+        .filter((event) => event.status !== 'cancelled')
+        .map((event) => ({
+          ...event,
+          calendarId: calendar.id,
+          calendarName: calendar.summary,
+        }))
+    }),
+  )
+
+  return perCalendar
+    .flat()
+    .sort(compareGoogleCalendarEvents)
+    .slice(0, limit)
+}
+
+export async function getGoogleCalendarEvent(
+  accessToken: string,
+  calendarId: string,
+  calendarName: string,
+  eventId: string,
+) {
+  const event = await googleFetch<GoogleCalendarEvent>(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    accessToken,
+  )
+
+  return {
+    ...event,
+    calendarId,
+    calendarName,
+  }
 }
 
 export async function queryFreeBusy(
@@ -129,6 +206,28 @@ export async function updateGoogleCalendarEvent(
     method: 'PATCH',
     request,
   })
+}
+
+export async function deleteGoogleCalendarEvent(
+  accessToken: string,
+  calendarId: string,
+  eventId: string,
+) {
+  await googleFetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    accessToken,
+    {
+      method: 'DELETE',
+    },
+  )
+
+  return {
+    actionPerformed: 'deleted' as const,
+    calendarId,
+    eventId,
+    htmlLink: null,
+    sendUpdates: true,
+  }
 }
 
 function buildGoogleEventPayload(request: SubmitEventRequest) {
@@ -252,5 +351,29 @@ async function googleFetch<T>(
     throw new Error(`Google API request failed (${response.status}): ${body}`)
   }
 
+  if (response.status === 204) {
+    return undefined as T
+  }
+
   return (await response.json()) as T
+}
+
+function selectTargetCalendars(
+  calendars: GoogleCalendarListEntry[],
+  calendarIds?: string[],
+) {
+  if (calendarIds && calendarIds.length > 0) {
+    const requested = new Set(calendarIds)
+    return calendars.filter((calendar) => requested.has(calendar.id)).slice(0, 10)
+  }
+
+  return calendars.slice(0, 5)
+}
+
+function compareGoogleCalendarEvents(left: GoogleCalendarEvent, right: GoogleCalendarEvent) {
+  return getSortableEventStart(left).localeCompare(getSortableEventStart(right))
+}
+
+function getSortableEventStart(event: GoogleCalendarEvent) {
+  return event.start?.dateTime ?? event.start?.date ?? ''
 }

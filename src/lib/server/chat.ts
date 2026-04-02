@@ -1,545 +1,750 @@
-import { generateObject, generateText, stepCountIs, tool } from 'ai'
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  stepCountIs,
+  streamText,
+  tool,
+} from 'ai'
 import { z } from 'zod'
+import type { AppChatMessage } from '@/lib/chat-ui'
+import { getMessageText, toSourceInputsFromMessage } from '@/lib/chat-ui'
 import type {
-  AssistantTurnResponse,
-  ChatArtifact,
-  ChatTurnInput,
-  FactsContext,
-  ReviewDraft,
+  ChatNotice,
+  DraftIntent,
+  ExecutionMode,
+  SourceInput,
   SubmitEventRequest,
+  SubmitEventResponse,
 } from '@/lib/contracts'
-import { emptyFactsContext } from '@/lib/contracts'
+import { draftIntentSchema } from '@/lib/contracts'
+import { deriveEndTime, formatRfc3339InTimeZone } from '@/lib/domain/date-time'
+import { buildChatSystemPrompt } from '@/lib/server/chat-system-prompt'
 import { getOpenAIModel } from '@/lib/server/ai-model'
 import { logDebug, withDebugTiming } from '@/lib/server/debug'
 import { getServerEnv } from '@/lib/server/env'
 
-const draftPatchSchema = z.object({
-  allDay: z.boolean().optional(),
-  calendarId: z.string().nullable().optional(),
-  date: z.string().nullable().optional(),
-  description: z.string().nullable().optional(),
-  durationMinutes: z.number().int().positive().nullable().optional(),
-  endDate: z.string().nullable().optional(),
-  endTime: z.string().nullable().optional(),
-  location: z.string().nullable().optional(),
-  recurrenceRule: z.string().nullable().optional(),
-  selectedMatchEventId: z.string().nullable().optional(),
-  startTime: z.string().nullable().optional(),
-  timezone: z.string().nullable().optional(),
-  title: z.string().nullable().optional(),
-  updateIntent: z.enum(['keep', 'create', 'update']).default('keep'),
+const attendeeMentionInputSchema = z.object({
+  email: z.string().email().nullable().optional(),
+  name: z.string().trim().min(1),
+  optional: z.boolean().optional(),
 })
 
-export async function runAssistantTurn(input: ChatTurnInput): Promise<AssistantTurnResponse> {
+const eventInputSchema = z.object({
+  allDay: z.boolean().optional(),
+  attendeeMentions: z.array(attendeeMentionInputSchema).optional(),
+  calendarId: z.string().trim().nullable().optional(),
+  date: z.string().trim().nullable().optional(),
+  description: z.string().trim().nullable().optional(),
+  durationMinutes: z.number().int().positive().nullable().optional(),
+  endDate: z.string().trim().nullable().optional(),
+  endTime: z.string().trim().nullable().optional(),
+  location: z.string().trim().nullable().optional(),
+  recurrenceRule: z.string().trim().nullable().optional(),
+  startTime: z.string().trim().nullable().optional(),
+  timezone: z.string().trim().nullable().optional(),
+  title: z.string().trim().nullable().optional(),
+})
+
+const searchEventsInputSchema = z.object({
+  calendarIds: z.array(z.string()).max(10).optional(),
+  dateFrom: z.string().trim().optional(),
+  dateTo: z.string().trim().optional(),
+  limit: z.number().int().min(1).max(20).default(8),
+  query: z.string().trim().max(120).optional(),
+})
+
+const getEventInputSchema = z.object({
+  calendarId: z.string().trim().min(1),
+  eventId: z.string().trim().min(1),
+})
+
+const checkAvailabilityInputSchema = z.object({
+  calendarIds: z.array(z.string()).max(10).optional(),
+  date: z.string().min(1),
+  durationMinutes: z.number().int().positive().max(720).optional(),
+  endTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  startTime: z.string().regex(/^\d{2}:\d{2}$/),
+  timezone: z.string().optional(),
+})
+
+const updateEventInputSchema = eventInputSchema.extend({
+  calendarId: z.string().trim().min(1),
+  eventId: z.string().trim().min(1),
+})
+
+const deleteEventInputSchema = z.object({
+  calendarId: z.string().trim().min(1),
+  eventId: z.string().trim().min(1),
+  title: z.string().trim().optional(),
+  when: z.string().trim().optional(),
+})
+
+interface AssistantTurnInput {
+  executionMode: ExecutionMode
+  latestUserText: string
+  localTimeZone: string
+  messages: AppChatMessage[]
+  sourceInputs: SourceInput[]
+}
+
+type SessionContext = Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>
+
+export async function streamAssistantTurn(params: {
+  messages: AppChatMessage[]
+  executionMode: ExecutionMode
+  localTimeZone: string
+  abortSignal?: AbortSignal
+}): Promise<Response> {
+  const input = buildAssistantTurnInput(params)
   const env = getServerEnv()
   const model = getOpenAIModel(env.OPENAI_MODEL)
   const { getSessionContext } = await import('@/lib/server/auth')
   const session = await getSessionContext()
-  const latestUserText = [...input.history].reverse().find((message) => message.role === 'user')?.text ?? ''
-  let latestArtifact = input.currentArtifact
   const turnId = crypto.randomUUID().slice(0, 8)
+  let latestNotice: ChatNotice | null = null
 
   logDebug('ai:chat', 'turn:start', {
-    artifactKind: latestArtifact?.kind ?? 'none',
-    historyCount: input.history.length,
-    latestInputCount: input.latestInputs.length,
+    executionMode: input.executionMode,
+    messageCount: input.messages.length,
     model: env.OPENAI_MODEL,
     signedIn: Boolean(session),
+    sourceInputCount: input.sourceInputs.length,
     turnId,
   })
-
-  if (!latestArtifact && input.latestInputs.length > 0) {
-    const artifact = await executeLoggedTool('extract_event_from_inputs', turnId, async () => {
-      const nextArtifact = await buildDraftArtifact({
-        latestInputs: input.latestInputs,
-        localTimeZone: input.localTimeZone,
-        session,
-      })
-      latestArtifact = nextArtifact
-      return nextArtifact
-    })
-
-    latestArtifact = artifact
-  }
-
-  const directAction = inferDirectAction(latestArtifact, latestUserText, input.latestInputs.length)
-  if (directAction) {
-    const outcome = await executeLoggedTool(directAction, turnId, async () => {
-      const result = await submitCurrentArtifact({
-        actionOverride: directAction === 'create_event' ? { type: 'create' as const } : null,
-        currentArtifact: latestArtifact,
-        session,
-      })
-      latestArtifact = result.artifact
-      return result
-    })
-
-    return {
-      artifact: outcome.artifact,
-      text: outcome.detail,
-    }
-  }
 
   const tools = buildTurnTools({
+    executionMode: input.executionMode,
     input,
-    latestUserText,
     session,
+    setNotice: (notice) => {
+      latestNotice = notice
+    },
     turnId,
-    getArtifact: () => latestArtifact,
-    updateArtifact: (artifact) => {
-      latestArtifact = artifact
+  })
+
+  const modelMessages = await convertToModelMessages(
+    params.messages.map(({ id: _id, ...message }) => message),
+  )
+
+  const stream = createUIMessageStream<AppChatMessage>({
+    originalMessages: params.messages,
+    execute: ({ writer }) => {
+      const result = streamText({
+        abortSignal: params.abortSignal,
+        messages: modelMessages,
+        model,
+        onFinish: () => {
+          if (latestNotice) {
+            writer.write({
+              data: latestNotice,
+              type: 'data-chatNotice',
+            })
+          }
+        },
+        stopWhen: stepCountIs(6),
+        system: buildChatSystemPrompt({
+          executionMode: input.executionMode,
+          signedIn: Boolean(session),
+        }),
+        tools,
+      })
+
+      writer.merge(result.toUIMessageStream<AppChatMessage>({ sendReasoning: true }))
+    },
+    onFinish: ({ responseMessage }) => {
+      logDebug('ai:chat', 'turn:done', {
+        noticeKind: latestNotice?.kind ?? 'none',
+        responseTextLength: getMessageText(responseMessage).trim().length,
+        turnId,
+      })
     },
   })
-  const artifactContext = describeArtifactForPrompt(latestArtifact)
 
-  const result = await withDebugTiming('ai:chat', 'generateText', () => generateText({
-    messages: input.history
-      .filter((message) => message.text.trim().length > 0)
-      .map((message) => ({
-        content: message.text,
-        role: message.role,
-      })),
-    model,
-    stopWhen: stepCountIs(4),
-    system: [
-      'You are a concise scheduling copilot inside a one-page chat workspace.',
-      'Use tools only when they are actually needed.',
-      'A draft may already have been prepared before this turn starts, so do not ask to extract it again unless the user is replacing the draft with new event details.',
-      'When there is an existing draft and the user changes or clarifies it, call update_existing_draft.',
-      'Only call create_event or update_event when the user clearly wants to write to Google Calendar.',
-      'If a protected Google action is requested while signed out, explain that sign-in is required and keep the current draft intact.',
-      'Keep the response short and practical.',
-      artifactContext,
-      `Google tools are currently ${session ? 'available' : 'unavailable because the user is signed out'}.`,
-    ].join('\n'),
-    tools,
-  }), {
-    model: env.OPENAI_MODEL,
-    turnId,
-  })
+  return createUIMessageStreamResponse({ stream })
+}
 
-  logDebug('ai:chat', 'turn:done', {
-    artifactKind: latestArtifact?.kind ?? 'none',
-    responseTextLength: result.text.trim().length,
-    turnId,
-  })
+function buildAssistantTurnInput(params: {
+  executionMode: ExecutionMode
+  localTimeZone: string
+  messages: AppChatMessage[]
+}): AssistantTurnInput {
+  const latestUserMessage = [...params.messages].reverse().find((message) => message.role === 'user')
 
   return {
-    artifact: latestArtifact,
-    text: result.text.trim() || fallbackAssistantText(latestArtifact),
+    executionMode: params.executionMode,
+    latestUserText: latestUserMessage ? getMessageText(latestUserMessage) : '',
+    localTimeZone: params.localTimeZone,
+    messages: params.messages,
+    sourceInputs: collectConversationSourceInputs(params.messages),
   }
 }
 
 function buildTurnTools(params: {
-  input: ChatTurnInput
-  latestUserText: string
-  session: Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>
+  executionMode: ExecutionMode
+  input: AssistantTurnInput
+  session: SessionContext
+  setNotice: (notice: ChatNotice | null) => void
   turnId: string
-  getArtifact: () => ChatArtifact | null
-  updateArtifact: (artifact: ChatArtifact | null) => void
 }) {
-  const { input, latestUserText, session, turnId, getArtifact, updateArtifact } = params
-  const initialArtifact = getArtifact()
+  const { executionMode, input, session, setNotice, turnId } = params
 
-  if (initialArtifact?.kind !== 'event-draft') {
-    return {}
-  }
-  const draftArtifact = initialArtifact
-  const missingDraftResult = () => ({
-    artifact: getArtifact(),
-    detail: 'There is no current draft yet.',
-  })
-
-  async function refreshCurrentDraftArtifact(): Promise<Extract<ChatArtifact, { kind: 'event-draft' }> | null> {
-    const artifact = getArtifact()
-    if (artifact?.kind !== 'event-draft') {
-      return null
-    }
-
-    return {
-      ...artifact,
-      draft: await refreshDraft({
-        draft: artifact.draft,
-        localTimeZone: input.localTimeZone,
-        session,
-      }),
-      supportsGoogleActions: Boolean(session),
-    }
-  }
-
-  function buildRefreshTool(
-    toolName: string,
-    description: string,
-    getDetail: (artifact: Extract<ChatArtifact, { kind: 'event-draft' }>) => string,
-  ) {
-    return tool({
-      description,
+  return {
+    list_writable_calendars: tool({
+      description: 'List writable Google Calendars for the signed-in user.',
       inputSchema: z.object({}),
       execute: async () =>
-        executeLoggedTool(toolName, turnId, async () => {
-          const artifact = await refreshCurrentDraftArtifact()
-          if (!artifact) {
-            return missingDraftResult()
+        executeLoggedTool('list_writable_calendars', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google to list your calendars.')
           }
 
-          updateArtifact(artifact)
+          const { listWritableCalendars } = await import('@/lib/server/google-calendar')
+          const calendars = await listWritableCalendars(session.tokens.accessToken)
+
           return {
-            artifact,
-            detail: getDetail(artifact),
-          }
-        }),
-    })
-  }
-
-  function buildSubmitTool(
-    toolName: string,
-    description: string,
-    actionOverride: SubmitEventRequest['action'] | null,
-  ) {
-    return tool({
-      description,
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool(toolName, turnId, async () => {
-          const result = await submitCurrentArtifact({
-            actionOverride,
-            currentArtifact: getArtifact(),
-            session,
-          })
-          updateArtifact(result.artifact)
-          return result
-        }),
-    })
-  }
-
-  const tools = {
-    update_existing_draft: tool({
-      description:
-        'Apply a natural-language change to the current draft and recompute warnings and suggestions.',
-      inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('update_existing_draft', turnId, async () => {
-          const artifact = getArtifact()
-          if (artifact?.kind !== 'event-draft') {
-            return {
-              artifact,
-              detail: 'There is no current draft yet.',
-            }
-          }
-          const factsContext = session
-            ? await loadFactsForSession(session.profile.sub)
-            : emptyFactsContext
-          const patch = await inferDraftPatch({
-            currentDraft: artifact.draft,
-            factsContext,
-            localTimeZone: input.localTimeZone,
-            message: latestUserText,
-          })
-          const nextDraft = structuredClone(artifact.draft)
-          applyDraftPatch(nextDraft, patch)
-          const refreshed = await refreshDraft({
-            draft: nextDraft,
-            localTimeZone: input.localTimeZone,
-            session,
-          })
-          const result = {
-            artifact: {
-              kind: 'event-draft' as const,
-              draft: refreshed,
-              sourceInputs: mergeSourceInputs(artifact.sourceInputs, input.latestInputs),
-              supportsGoogleActions: Boolean(session),
-            },
+            calendars: calendars.map((calendar) => ({
+              accessRole: calendar.accessRole,
+              id: calendar.id,
+              primary: Boolean(calendar.primary),
+              summary: calendar.summary,
+              timeZone: calendar.timeZone ?? null,
+            })),
             detail:
-              patch.updateIntent === 'update'
-                ? 'Updated the current draft and kept the update-existing intent selected.'
-                : 'Updated the current draft with the latest change.',
+              calendars.length > 0
+                ? `Found ${calendars.length} writable calendar${calendars.length === 1 ? '' : 's'}.`
+                : 'No writable calendars were found.',
           }
-          updateArtifact(result.artifact)
-          return result
+        }),
+    }),
+    search_events: tool({
+      description: 'Search Google Calendar events by text query, date range, and optional calendar IDs.',
+      inputSchema: searchEventsInputSchema,
+      execute: async ({ calendarIds, dateFrom, dateTo, limit, query }) =>
+        executeLoggedTool('search_events', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google to search your calendar events.')
+          }
+
+          const {
+            listWritableCalendars,
+            searchGoogleCalendarEvents,
+          } = await import('@/lib/server/google-calendar')
+          const calendars = await listWritableCalendars(session.tokens.accessToken)
+          const events = await searchGoogleCalendarEvents({
+            accessToken: session.tokens.accessToken,
+            calendarIds,
+            calendars,
+            limit,
+            query,
+            timeMax: dateTo ? `${dateTo}T23:59:59Z` : undefined,
+            timeMin: dateFrom ? `${dateFrom}T00:00:00Z` : undefined,
+          })
+
+          return {
+            detail:
+              events.length > 0
+                ? `Found ${events.length} matching event${events.length === 1 ? '' : 's'}.`
+                : 'No matching events were found.',
+            events: events.map((event) => ({
+              calendarId: event.calendarId,
+              calendarName: event.calendarName,
+              end: event.end ?? null,
+              id: event.id,
+              location: event.location ?? null,
+              start: event.start ?? null,
+              summary: event.summary ?? '(untitled)',
+            })),
+          }
+        }),
+    }),
+    get_event: tool({
+      description: 'Fetch a specific Google Calendar event by calendar ID and event ID.',
+      inputSchema: getEventInputSchema,
+      execute: async ({ calendarId, eventId }) =>
+        executeLoggedTool('get_event', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google to inspect calendar events.')
+          }
+
+          const {
+            getGoogleCalendarEvent,
+            listWritableCalendars,
+          } = await import('@/lib/server/google-calendar')
+          const calendars = await listWritableCalendars(session.tokens.accessToken)
+          const calendarName =
+            calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId
+          const event = await getGoogleCalendarEvent(
+            session.tokens.accessToken,
+            calendarId,
+            calendarName,
+            eventId,
+          )
+
+          return {
+            detail: `Loaded ${event.summary ?? 'the selected event'}.`,
+            event: {
+              attendees: event.attendees ?? [],
+              calendarId: event.calendarId,
+              calendarName: event.calendarName,
+              description: event.description ?? null,
+              end: event.end ?? null,
+              id: event.id,
+              location: event.location ?? null,
+              start: event.start ?? null,
+              summary: event.summary ?? '(untitled)',
+            },
+          }
+        }),
+    }),
+    check_availability: tool({
+      description: 'Check Google Calendar availability for a given date/time window.',
+      inputSchema: checkAvailabilityInputSchema,
+      execute: async ({ calendarIds, date, durationMinutes, endTime, startTime, timezone }) =>
+        executeLoggedTool('check_availability', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google to check calendar availability.')
+          }
+
+          const {
+            listWritableCalendars,
+            queryFreeBusy,
+          } = await import('@/lib/server/google-calendar')
+          const calendars = await listWritableCalendars(session.tokens.accessToken)
+          const targetCalendarIds =
+            calendarIds && calendarIds.length > 0
+              ? calendarIds
+              : calendars.slice(0, 5).map((calendar) => calendar.id)
+          const resolvedTimeZone = timezone ?? input.localTimeZone
+          const resolvedEndTime = endTime ?? deriveEndTime(startTime, durationMinutes ?? 60)
+          const timeMin = formatRfc3339InTimeZone(date, startTime, resolvedTimeZone)
+          const timeMax = formatRfc3339InTimeZone(date, resolvedEndTime, resolvedTimeZone)
+          const busy = await queryFreeBusy(
+            session.tokens.accessToken,
+            targetCalendarIds,
+            timeMin,
+            timeMax,
+          )
+
+          return {
+            calendars: targetCalendarIds.map((calendarId) => ({
+              busy: busy[calendarId]?.busy ?? [],
+              calendarId,
+              calendarName:
+                calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId,
+            })),
+            detail: `Checked availability across ${targetCalendarIds.length} calendar${targetCalendarIds.length === 1 ? '' : 's'} from ${startTime} to ${resolvedEndTime} on ${date}.`,
+            timeMax,
+            timeMin,
+            timezone: resolvedTimeZone,
+          }
+        }),
+    }),
+    create_event: tool({
+      description: 'Create a Google Calendar event from explicit event fields.',
+      inputSchema: eventInputSchema,
+      execute: async (eventInput) =>
+        executeLoggedTool('create_event', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google before creating events.')
+          }
+
+          const normalized = await normalizeCreateRequest({
+            accessToken: session.tokens.accessToken,
+            eventInput,
+            localTimeZone: input.localTimeZone,
+            sourceInputs: input.sourceInputs,
+            userSub: session.profile.sub,
+          })
+          if (normalized.request == null) {
+            return { detail: normalized.detail }
+          }
+
+          const approvalBlock = ensureApprovalAllowed({
+            action: 'create',
+            executionMode,
+            latestUserText: input.latestUserText,
+            messages: input.messages,
+            summary: normalized.summary,
+          })
+          if (approvalBlock) {
+            return { detail: approvalBlock }
+          }
+
+          return submitWriteRequest({
+            request: normalized.request,
+            session,
+            setNotice,
+          })
+        }),
+    }),
+    update_event: tool({
+      description: 'Update an existing Google Calendar event. Provide the event id, calendar id, and changed fields.',
+      inputSchema: updateEventInputSchema,
+      execute: async ({ calendarId, eventId, ...eventInput }) =>
+        executeLoggedTool('update_event', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google before updating events.')
+          }
+
+          const normalized = await normalizeUpdateRequest({
+            accessToken: session.tokens.accessToken,
+            calendarId,
+            eventId,
+            eventInput,
+            localTimeZone: input.localTimeZone,
+            sourceInputs: input.sourceInputs,
+            userSub: session.profile.sub,
+          })
+          if (normalized.request == null) {
+            return { detail: normalized.detail }
+          }
+
+          const approvalBlock = ensureApprovalAllowed({
+            action: 'update',
+            executionMode,
+            latestUserText: input.latestUserText,
+            messages: input.messages,
+            summary: normalized.summary,
+          })
+          if (approvalBlock) {
+            return { detail: approvalBlock }
+          }
+
+          return submitWriteRequest({
+            request: normalized.request,
+            session,
+            setNotice,
+          })
+        }),
+    }),
+    reschedule_event: tool({
+      description: 'Reschedule an existing Google Calendar event by changing its date and or time fields.',
+      inputSchema: updateEventInputSchema,
+      execute: async ({ calendarId, eventId, ...eventInput }) =>
+        executeLoggedTool('reschedule_event', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google before rescheduling events.')
+          }
+
+          const normalized = await normalizeUpdateRequest({
+            accessToken: session.tokens.accessToken,
+            calendarId,
+            eventId,
+            eventInput,
+            localTimeZone: input.localTimeZone,
+            sourceInputs: input.sourceInputs,
+            userSub: session.profile.sub,
+          })
+          if (normalized.request == null) {
+            return { detail: normalized.detail }
+          }
+
+          const approvalBlock = ensureApprovalAllowed({
+            action: 'reschedule',
+            executionMode,
+            latestUserText: input.latestUserText,
+            messages: input.messages,
+            summary: normalized.summary,
+          })
+          if (approvalBlock) {
+            return { detail: approvalBlock }
+          }
+
+          return submitWriteRequest({
+            request: normalized.request,
+            session,
+            setNotice,
+          })
+        }),
+    }),
+    delete_event: tool({
+      description: 'Delete a specific Google Calendar event by calendar id and event id.',
+      inputSchema: deleteEventInputSchema,
+      execute: async ({ calendarId, eventId, title, when }) =>
+        executeLoggedTool('delete_event', turnId, async () => {
+          if (!session) {
+            return signInRequiredResult(setNotice, 'Sign in with Google before deleting events.')
+          }
+
+          const summary = summarizeDeleteAction({
+            title: title?.trim() || 'Untitled event',
+            when: when?.trim() || null,
+          })
+          const approvalBlock = ensureApprovalAllowed({
+            action: 'delete',
+            executionMode,
+            latestUserText: input.latestUserText,
+            messages: input.messages,
+            summary,
+          })
+          if (approvalBlock) {
+            return { detail: approvalBlock }
+          }
+
+          const { deleteGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
+          const deletion = await deleteGoogleCalendarEvent(
+            session.tokens.accessToken,
+            calendarId,
+            eventId,
+          )
+          const response = {
+            actionPerformed: deletion.actionPerformed,
+            calendarId: deletion.calendarId,
+            eventId: deletion.eventId,
+            factChangesApplied: {
+              created: [],
+              staled: [],
+              updated: [],
+            },
+            htmlLink: deletion.htmlLink,
+            sendUpdates: deletion.sendUpdates,
+          } satisfies SubmitEventResponse
+          setNotice({
+            kind: 'event-success',
+            response,
+          })
+
+          return {
+            detail: `Deleted ${title?.trim() || 'the selected event'} from Google Calendar.`,
+          }
         }),
     }),
   }
-
-  if (!session) {
-    return tools
-  }
-
-  return {
-    ...tools,
-    fetch_recent_calendar_context: buildRefreshTool(
-      'fetch_recent_calendar_context',
-      'Refresh recent Google Calendar context for the current draft.',
-      (artifact) =>
-        `Loaded recent context from ${artifact.draft.calendarContext.calendars.length} writable calendars.`,
-    ),
-    resolve_attendee_candidates: buildRefreshTool(
-      'resolve_attendee_candidates',
-      'Refresh attendee suggestions for the current draft.',
-      (artifact) =>
-        artifact.draft.attendeeGroups.length > 0
-          ? `Resolved ${artifact.draft.attendeeGroups.length} attendee mention${artifact.draft.attendeeGroups.length === 1 ? '' : 's'}.`
-          : 'No attendee mentions were found in the current draft.',
-    ),
-    check_free_busy: buildRefreshTool(
-      'check_free_busy',
-      'Run a Google Calendar conflict check for the current draft.',
-      (artifact) =>
-        artifact.draft.conflictCheck.hasConflict
-          ? 'A time conflict was found in the selected calendar set.'
-          : 'No conflicts were found in the checked calendars.',
-    ),
-    find_existing_event_matches: buildRefreshTool(
-      'find_existing_event_matches',
-      'Refresh existing-event matches for the current draft.',
-      (artifact) =>
-        artifact.draft.existingEventMatches.length > 0
-          ? `Found ${artifact.draft.existingEventMatches.length} existing event match${artifact.draft.existingEventMatches.length === 1 ? '' : 'es'}.`
-          : 'No close existing-event match was found.',
-    ),
-    create_event: buildSubmitTool(
-      'create_event',
-      'Create the current draft as a new Google Calendar event.',
-      { type: 'create' },
-    ),
-    ...(draftArtifact.draft.existingEventMatches.length > 0
-      ? {
-          update_event: buildSubmitTool(
-            'update_event',
-            'Update the selected existing Google Calendar event from the current draft.',
-            null,
-          ),
-        }
-      : {}),
-  }
 }
 
-function describeArtifactForPrompt(artifact: ChatArtifact | null) {
-  if (!artifact) {
-    return 'There is no active draft yet.'
-  }
-
-  if (artifact.kind === 'sign-in-required') {
-    return `The current state is a sign-in requirement notice: ${artifact.detail}`
-  }
-
-  if (artifact.kind === 'event-success') {
-    return `The latest action already ${artifact.response.actionPerformed} an event.`
-  }
-
-  return [
-    'There is an active draft.',
-    `Title: ${artifact.draft.event.title || '(untitled)'}`,
-    `Date: ${artifact.draft.event.date || '(unknown)'}`,
-    `Start time: ${artifact.draft.event.startTime || '(unknown)'}`,
-    `Calendar: ${artifact.draft.event.calendarId}`,
-    `Conflict: ${artifact.draft.conflictCheck.hasConflict ? 'yes' : 'no'}`,
-    `Existing matches: ${artifact.draft.existingEventMatches.length}`,
-    `Suggested action: ${artifact.draft.proposedAction.type}`,
-  ].join('\n')
-}
-
-function inferDirectAction(
-  artifact: ChatArtifact | null,
-  latestUserText: string,
-  latestInputCount: number,
-): 'create_event' | 'update_event' | null {
-  if (artifact?.kind !== 'event-draft' || latestInputCount > 0) {
-    return null
-  }
-
-  const normalized = latestUserText.trim().toLowerCase()
-  if (!normalized) {
-    return null
-  }
-
-  const isApproval =
-    /^(yes|yep|yeah|sure|ok|okay|looks good|do it|go ahead|create it|add it|submit it)$/i.test(
-      normalized,
-    )
-  if (!isApproval) {
-    return null
-  }
-
-  return artifact.draft.proposedAction.type === 'update' ? 'update_event' : 'create_event'
-}
-
-async function buildDraftArtifact(params: {
-  latestInputs: ChatTurnInput['latestInputs']
+async function normalizeCreateRequest(params: {
+  accessToken: string
+  eventInput: z.infer<typeof eventInputSchema>
   localTimeZone: string
-  session: Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>
+  sourceInputs: SourceInput[]
+  userSub: string
 }) {
-  const { latestInputs, localTimeZone, session } = params
-  const { extractStructuredDraft } = await import('@/lib/server/extraction')
-  const {
-    buildExtractionOnlyReviewDraft,
-    buildInitialReviewDraft,
-  } = await import('@/lib/server/review-draft')
-  const factsContext = session ? await loadFactsForSession(session.profile.sub) : emptyFactsContext
-  const buildDraftInput = {
-    inputs: latestInputs,
+  const { accessToken, eventInput, localTimeZone, sourceInputs, userSub } = params
+  const { buildSignedInReviewDraft } = await import('@/lib/server/review-draft')
+  const intent = mergeIntent(defaultDraftIntent(localTimeZone), eventInput, localTimeZone)
+  const draft = await buildSignedInReviewDraft({
+    accessToken,
+    intent,
     localTimeZone,
+    userSub,
+  })
+  const blocking = draft.reviewBlockers.filter((blocker) => blocker.severity === 'blocking')
+  if (blocking.length > 0) {
+    return {
+      detail: buildMissingFieldsMessage(blocking),
+      request: null,
+      summary: summarizeEventAction('create', draft.event),
+    }
   }
-  const extracted = await extractStructuredDraft(buildDraftInput, factsContext)
-  const draft = session
-    ? await buildInitialReviewDraft({
-        accessToken: session.tokens.accessToken,
-        extracted,
-        input: buildDraftInput,
-        userSub: session.profile.sub,
-      })
-    : await buildExtractionOnlyReviewDraft({
-        extracted,
-        input: buildDraftInput,
-      })
 
   return {
-    kind: 'event-draft' as const,
-    draft,
-    sourceInputs: latestInputs,
-    supportsGoogleActions: Boolean(session),
+    detail: null,
+    request: {
+      action: { type: 'create' as const },
+      appendSourceDetails: true,
+      attendeeGroups: draft.attendeeGroups,
+      event: draft.event,
+      sourceInputs,
+    } satisfies SubmitEventRequest,
+    summary: summarizeEventAction('create', draft.event),
   }
 }
 
-async function refreshDraft(params: {
-  draft: ReviewDraft
+async function normalizeUpdateRequest(params: {
+  accessToken: string
+  calendarId: string
+  eventId: string
+  eventInput: z.infer<typeof eventInputSchema>
   localTimeZone: string
-  session: Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>
+  sourceInputs: SourceInput[]
+  userSub: string
 }) {
-  const { draft, localTimeZone, session } = params
   const {
-    refreshExtractionOnlyDraftState,
-    refreshReviewDraftState,
-  } = await import('@/lib/server/review-draft')
-
-  return session
-    ? refreshReviewDraftState({
-        accessToken: session.tokens.accessToken,
-        request: {
-          draft,
-          localTimeZone,
-        },
-        userSub: session.profile.sub,
-      })
-    : refreshExtractionOnlyDraftState({
-        request: {
-          draft,
-          localTimeZone,
-        },
-      })
-}
-
-async function inferDraftPatch(params: {
-  currentDraft: ReviewDraft
-  factsContext: FactsContext
-  localTimeZone: string
-  message: string
-}) {
-  const env = getServerEnv()
-  const model = getOpenAIModel(env.OPENAI_MODEL)
-  return withDebugTiming('ai:chat', 'inferDraftPatch', async () => {
-    const { object } = await generateObject({
-      model,
-      schema: draftPatchSchema,
-      schemaName: 'draft_patch',
-      system: [
-        'You update an existing calendar draft from a short follow-up chat message.',
-        'Return only changed fields.',
-        'Never invent missing values.',
-        'If the message does not specify a field change, omit it.',
-        `Default local timezone: ${params.localTimeZone}.`,
-        `Shared facts summary: ${JSON.stringify(params.factsContext.promptSummary)}`,
-      ].join('\n'),
-      prompt: [
-        `Current draft: ${JSON.stringify(params.currentDraft)}`,
-        `User follow-up: ${params.message}`,
-      ].join('\n\n'),
-    })
-
-    return object
-  }, {
-    draftTitle: params.currentDraft.event.title || '(untitled)',
-    messageLength: params.message.length,
-    model: env.OPENAI_MODEL,
+    accessToken,
+    calendarId,
+    eventId,
+    eventInput,
+    localTimeZone,
+    sourceInputs,
+    userSub,
+  } = params
+  const {
+    getGoogleCalendarEvent,
+    listWritableCalendars,
+  } = await import('@/lib/server/google-calendar')
+  const { buildSignedInReviewDraft } = await import('@/lib/server/review-draft')
+  const calendars = await listWritableCalendars(accessToken)
+  const calendarName = calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId
+  const currentEvent = await getGoogleCalendarEvent(accessToken, calendarId, calendarName, eventId)
+  const intent = mergeIntent(
+    buildIntentFromGoogleEvent(currentEvent, localTimeZone),
+    eventInput,
+    localTimeZone,
+  )
+  const draft = await buildSignedInReviewDraft({
+    accessToken,
+    intent,
+    localTimeZone,
+    selectedUpdateTarget: {
+      calendarId,
+      eventId,
+      start: currentEvent.start?.dateTime ?? currentEvent.start?.date ?? null,
+      title: currentEvent.summary ?? 'Untitled event',
+    },
+    userSub,
   })
-}
-
-function applyDraftPatch(draft: ReviewDraft, patch: z.infer<typeof draftPatchSchema>) {
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) {
-      continue
-    }
-    if (key === 'updateIntent' || key === 'selectedMatchEventId') {
-      continue
-    }
-    ;(draft.event as Record<string, unknown>)[key] = value
-  }
-
-  if (patch.updateIntent === 'create') {
-    draft.proposedAction = { type: 'create' }
-    draft.existingEventMatches = draft.existingEventMatches.map((match) => ({
-      ...match,
-      selected: false,
-    }))
-  }
-
-  if (patch.updateIntent === 'update') {
-    const selectedMatch =
-      draft.existingEventMatches.find((match) => match.eventId === patch.selectedMatchEventId) ??
-      draft.existingEventMatches[0]
-    if (selectedMatch) {
-      draft.proposedAction = {
-        type: 'update',
-        calendarId: selectedMatch.calendarId,
-        eventId: selectedMatch.eventId,
-      }
-      draft.existingEventMatches = draft.existingEventMatches.map((match) => ({
-        ...match,
-        selected: match.eventId === selectedMatch.eventId,
-      }))
-    }
-  }
-}
-
-async function submitCurrentArtifact(params: {
-  actionOverride: SubmitEventRequest['action'] | null
-  currentArtifact: ChatArtifact | null
-  session: Awaited<ReturnType<typeof import('@/lib/server/auth').getSessionContext>>
-}): Promise<{ artifact: ChatArtifact | null; detail: string }> {
-  const { actionOverride, currentArtifact, session } = params
-  if (currentArtifact?.kind !== 'event-draft') {
+  const blocking = draft.reviewBlockers.filter((blocker) => blocker.severity === 'blocking')
+  if (blocking.length > 0) {
     return {
-      artifact: currentArtifact,
-      detail: 'There is no active draft to write yet.',
+      detail: buildMissingFieldsMessage(blocking),
+      request: null,
+      summary: summarizeEventAction('update', draft.event),
     }
   }
 
-  if (!session) {
-    return {
-      artifact: {
-        kind: 'sign-in-required' as const,
-        detail: 'Sign in with Google before creating or updating calendar events.',
+  return {
+    detail: null,
+    request: {
+      action: {
+        type: 'update' as const,
+        calendarId,
+        eventId,
       },
-      detail: 'Google sign-in is required before writing calendar events.',
+      appendSourceDetails: true,
+      attendeeGroups: draft.attendeeGroups,
+      event: draft.event,
+      sourceInputs,
+    } satisfies SubmitEventRequest,
+    summary: summarizeEventAction('update', draft.event),
+  }
+}
+
+async function submitWriteRequest(params: {
+  request: SubmitEventRequest
+  session: NonNullable<SessionContext>
+  setNotice: (notice: ChatNotice | null) => void
+}) {
+  const { request, session, setNotice } = params
+  const response = await writeCalendarEvent(session, request)
+  setNotice({
+    kind: 'event-success',
+    response,
+  })
+
+  return {
+    detail:
+      response.actionPerformed === 'created'
+        ? 'Created the event in Google Calendar.'
+        : response.actionPerformed === 'updated'
+          ? 'Updated the existing Google Calendar event.'
+          : 'Deleted the Google Calendar event.',
+  }
+}
+
+function ensureApprovalAllowed(params: {
+  action: 'create' | 'delete' | 'reschedule' | 'update'
+  executionMode: ExecutionMode
+  latestUserText: string
+  messages: AppChatMessage[]
+  summary: string
+}) {
+  const { action, executionMode, latestUserText, messages, summary } = params
+  if (executionMode !== 'approval-first') {
+    return null
+  }
+
+  if (!isApprovalReply(latestUserText)) {
+    return `Approval-first mode is enabled. Ask the user to confirm this action in chat before writing: ${summary}`
+  }
+
+  const previousAssistantText = getPreviousAssistantText(messages)
+  if (!previousAssistantText) {
+    return `Approval-first mode is enabled. Ask the user to confirm this action in chat before writing: ${summary}`
+  }
+
+  if (!assistantAskedForConfirmation(previousAssistantText, action, summary)) {
+    return `Approval-first mode is enabled. Ask the user to confirm this action in chat before writing: ${summary}`
+  }
+
+  return null
+}
+
+function assistantAskedForConfirmation(
+  text: string,
+  action: 'create' | 'delete' | 'reschedule' | 'update',
+  summary: string,
+) {
+  const normalized = text.toLowerCase()
+  const asksConfirmation =
+    normalized.includes('confirm') ||
+    normalized.includes('reply yes') ||
+    normalized.includes('should i') ||
+    normalized.includes('want me to')
+  if (!asksConfirmation) {
+    return false
+  }
+
+  const actionKeywords: Record<typeof action, string[]> = {
+    create: ['create', 'add', 'schedule'],
+    delete: ['delete', 'remove', 'cancel'],
+    reschedule: ['reschedule', 'move', 'change the time'],
+    update: ['update', 'edit', 'change'],
+  }
+  const mentionsAction = actionKeywords[action].some((keyword) => normalized.includes(keyword))
+  if (!mentionsAction) {
+    return false
+  }
+
+  const summaryTitle = extractSummaryTitle(summary)
+  return summaryTitle ? normalized.includes(summaryTitle) : true
+}
+
+function extractSummaryTitle(summary: string) {
+  const match = summary.toLowerCase().match(/"([^"]+)"/)
+  return match?.[1] ?? null
+}
+
+function isApprovalReply(text: string) {
+  return /^(yes|yep|yeah|sure|ok|okay|looks good|do it|go ahead|confirm|please do|sounds good)$/i.test(
+    text.trim(),
+  )
+}
+
+function getPreviousAssistantText(messages: AppChatMessage[]) {
+  let seenLatestUser = false
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (!seenLatestUser && message.role === 'user') {
+      seenLatestUser = true
+      continue
+    }
+
+    if (seenLatestUser && message.role === 'assistant') {
+      return getMessageText(message)
     }
   }
 
-  const request: SubmitEventRequest = {
-    action: actionOverride ?? currentArtifact.draft.proposedAction,
-    appendSourceDetails: true,
-    attendeeGroups: currentArtifact.draft.attendeeGroups,
-    event: currentArtifact.draft.event,
-    extracted: currentArtifact.draft.extracted,
-    sourceInputs: currentArtifact.sourceInputs,
-  }
+  return ''
+}
 
-  if (request.action.type !== 'update' && actionOverride?.type !== 'create' &&
-      currentArtifact.draft.proposedAction.type !== 'update' && actionOverride == null) {
-    return {
-      artifact: currentArtifact,
-      detail: 'Choose an existing match in the draft card before asking me to update it.',
-    }
-  }
+function signInRequiredResult(
+  setNotice: (notice: ChatNotice | null) => void,
+  detail: string,
+) {
+  setNotice({
+    kind: 'sign-in-required',
+    detail,
+  })
 
+  return { detail }
+}
+
+async function writeCalendarEvent(
+  session: NonNullable<SessionContext>,
+  request: SubmitEventRequest,
+) {
   const {
     createGoogleCalendarEvent,
     listWritableCalendars,
@@ -569,30 +774,107 @@ async function submitCurrentArtifact(params: {
   )
 
   return {
-    artifact: {
-      kind: 'event-success' as const,
-      response: {
-        actionPerformed: result.actionPerformed,
-        calendarId: result.calendarId,
-        eventId: result.eventId,
-        factChangesApplied,
-        htmlLink: result.htmlLink,
-        sendUpdates: result.sendUpdates,
-      },
-    },
-    detail:
-      result.actionPerformed === 'created'
-        ? 'Created the event in Google Calendar.'
-        : 'Updated the existing Google Calendar event.',
-  }
+    actionPerformed: result.actionPerformed,
+    calendarId: result.calendarId,
+    eventId: result.eventId,
+    factChangesApplied,
+    htmlLink: result.htmlLink,
+    sendUpdates: result.sendUpdates,
+  } satisfies SubmitEventResponse
 }
 
-async function loadFactsForSession(userSub: string) {
-  const { loadFactsContext } = await import('@/lib/server/facts')
-  return loadFactsContext(userSub)
+function collectConversationSourceInputs(messages: AppChatMessage[]) {
+  return mergeSourceInputs(
+    [],
+    messages
+      .filter((message) => message.role === 'user')
+      .flatMap((message) => toSourceInputsFromMessage(message)),
+  )
 }
 
-function mergeSourceInputs(left: ChatTurnInput['latestInputs'], right: ChatTurnInput['latestInputs']) {
+function buildIntentFromGoogleEvent(
+  event: Awaited<ReturnType<typeof import('@/lib/server/google-calendar').getGoogleCalendarEvent>>,
+  fallbackTimeZone: string,
+): DraftIntent {
+  const isAllDay = Boolean(event.start?.date && !event.start?.dateTime)
+  const date = event.start?.date ?? event.start?.dateTime?.slice(0, 10) ?? null
+  const endDate = event.end?.date ?? event.end?.dateTime?.slice(0, 10) ?? date
+  const startTime = event.start?.dateTime?.slice(11, 16) ?? null
+  const endTime = event.end?.dateTime?.slice(11, 16) ?? null
+  const durationMinutes =
+    !isAllDay && startTime && endTime ? getDurationMinutes(startTime, endTime) : null
+
+  return draftIntentSchema.parse({
+    allDay: isAllDay,
+    attendeeMentions: (event.attendees ?? []).map((attendee) => ({
+      email: attendee.email ?? null,
+      name: attendee.displayName ?? attendee.email ?? 'Guest',
+      optional: false,
+    })),
+    calendarId: event.calendarId,
+    date,
+    description: event.description ?? null,
+    durationMinutes,
+    endDate,
+    endTime,
+    location: event.location ?? null,
+    recurrenceRule: null,
+    startTime,
+    timezone: event.start?.timeZone ?? event.end?.timeZone ?? fallbackTimeZone,
+    title: event.summary ?? null,
+  })
+}
+
+function defaultDraftIntent(localTimeZone: string): DraftIntent {
+  return draftIntentSchema.parse({
+    timezone: localTimeZone,
+  })
+}
+
+function mergeIntent(
+  base: DraftIntent,
+  update: z.infer<typeof eventInputSchema>,
+  fallbackTimeZone: string,
+): DraftIntent {
+  return draftIntentSchema.parse({
+    ...base,
+    ...removeUndefined(update),
+    timezone:
+      update.timezone === undefined
+        ? (base.timezone ?? fallbackTimeZone)
+        : update.timezone,
+  })
+}
+
+function buildMissingFieldsMessage(
+  blockers: Array<{ detail: string; label: string }>,
+) {
+  return `More detail is needed before writing to Google Calendar: ${blockers
+    .map((blocker) => blocker.label)
+    .join(', ')}. Ask the user for the missing information instead of writing now.`
+}
+
+function summarizeEventAction(
+  action: 'create' | 'update',
+  event: SubmitEventRequest['event'],
+) {
+  const when = event.allDay
+    ? event.date
+      ? `all day on ${event.date}`
+      : 'with no date yet'
+    : event.date && event.startTime
+      ? `${event.date} at ${event.startTime}`
+      : 'with missing time details'
+
+  return `${action === 'create' ? 'Create' : 'Update'} "${event.title || 'Untitled event'}" ${when}.`
+}
+
+function summarizeDeleteAction(params: { title: string; when: string | null }) {
+  const { title, when } = params
+  return `Delete "${title}"${when ? ` scheduled ${when}` : ''}.`
+}
+
+function mergeSourceInputs(left: SourceInput[], right: SourceInput[]): SourceInput[] {
   const seen = new Set<string>()
   return [...left, ...right].filter((input) => {
     if (seen.has(input.id)) {
@@ -603,21 +885,19 @@ function mergeSourceInputs(left: ChatTurnInput['latestInputs'], right: ChatTurnI
   })
 }
 
-function fallbackAssistantText(artifact: ChatArtifact | null) {
-  if (!artifact) {
-    return 'Tell me the event details or drop in a screenshot, and I’ll turn it into a calendar draft.'
-  }
+function removeUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as Partial<T>
+}
 
-  switch (artifact.kind) {
-    case 'event-draft':
-      return artifact.supportsGoogleActions
-        ? 'I updated the draft. Review the card below, then create or update the event when it looks right.'
-        : 'I updated the draft. Sign in with Google if you want attendee suggestions, conflict checks, or calendar write actions.'
-    case 'event-success':
-      return `The event was ${artifact.response.actionPerformed}.`
-    case 'sign-in-required':
-      return artifact.detail
-  }
+function getDurationMinutes(startTime: string, endTime: string) {
+  const [startHours, startMinutes] = startTime.split(':').map(Number)
+  const [endHours, endMinutes] = endTime.split(':').map(Number)
+  const start = startHours * 60 + startMinutes
+  const end = endHours * 60 + endMinutes
+
+  return Math.max(end >= start ? end - start : end + 24 * 60 - start, 1)
 }
 
 async function executeLoggedTool<T>(
@@ -643,14 +923,13 @@ async function executeLoggedTool<T>(
   })
 }
 
-function summarizeToolResult(result: unknown) {
+function summarizeToolResult(result: unknown): string {
   if (!result || typeof result !== 'object') {
     return String(result)
   }
 
-  if ('artifact' in result) {
-    const artifact = (result as { artifact?: ChatArtifact | null }).artifact
-    return artifact?.kind ?? 'none'
+  if ('detail' in result) {
+    return 'object'
   }
 
   return 'object'

@@ -8,7 +8,7 @@ export const Route = createFileRoute('/auth/login')({
         const { createGoogleAuthorizationUrl } = await import('@/lib/server/auth')
         const request = getRequest()
         const url = new URL(request.url)
-        const returnTo = url.searchParams.get('returnTo') ?? '/app'
+        const returnTo = url.searchParams.get('returnTo') ?? '/'
         return new Response(null, {
           status: 302,
           headers: {

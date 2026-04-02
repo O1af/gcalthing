@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { LandingPage } from '@/components/app/landing-page'
+import { WorkspaceShell } from '@/components/app/workspace-shell'
 import { getViewerSnapshot } from '@/lib/server/server-fns'
 
 export const Route = createFileRoute('/')({
@@ -9,5 +9,5 @@ export const Route = createFileRoute('/')({
 
 function IndexRouteComponent() {
   const viewer = Route.useLoaderData()
-  return <LandingPage viewer={viewer} />
+  return <WorkspaceShell viewer={viewer} />
 }

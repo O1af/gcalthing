@@ -57,28 +57,25 @@ describe('calendar context heuristics', () => {
   })
 
   it('resolves attendees and prefers the strongest calendar suggestion', () => {
-    const extracted = {
-      ambiguities: [],
-      assumptions: [],
+    const intent = {
+      allDay: false,
       attendeeMentions: [{ email: null, name: 'Sarah', optional: false }],
-      candidates: [],
-      confidence: 0.82,
+      calendarId: null,
       date: '2026-03-31',
       description: null,
       durationMinutes: 60,
+      endDate: '2026-03-31',
       endTime: '18:00',
-      evidence: [],
       location: 'Frita Batidos',
       recurrenceRule: null,
       startTime: '17:00',
       timezone: 'America/Detroit',
       title: 'Meet Sarah at Frita Batidos',
-      unknownFields: [],
     }
 
-    const attendees = resolveAttendeeGroups(extracted, recentEvents, emptyFactsContext)
+    const attendees = resolveAttendeeGroups(intent, recentEvents, emptyFactsContext)
     const suggestions = suggestCalendars(
-      extracted,
+      intent,
       calendars,
       recentEvents,
       emptyFactsContext,
@@ -92,22 +89,19 @@ describe('calendar context heuristics', () => {
 
   it('flags a likely duplicate when a similar event exists on the same day', () => {
     const duplicateCandidate = {
-      ambiguities: [],
-      assumptions: [],
+      allDay: false,
       attendeeMentions: [],
-      candidates: [],
-      confidence: 0.75,
+      calendarId: null,
       date: '2026-03-29',
       description: null,
       durationMinutes: 60,
+      endDate: '2026-03-29',
       endTime: '18:00',
-      evidence: [],
       location: null,
       recurrenceRule: null,
       startTime: '17:00',
       timezone: 'America/Detroit',
       title: 'Meet Sarah at Frita Batidos',
-      unknownFields: [],
     }
 
     const duplicates = detectExistingEventMatches(duplicateCandidate, recentEvents, calendars)
