@@ -2,10 +2,6 @@ export function normalizeText(value: string) {
   return value.toLowerCase().replaceAll(/[^a-z0-9]+/g, ' ').trim()
 }
 
-export function normalizePerson(value: string) {
-  return normalizeText(value)
-}
-
 export function similarity(left: string, right: string) {
   if (!left || !right) {
     return 0

@@ -102,8 +102,7 @@ export async function handleGoogleOAuthCallback(code: string, state: string) {
     codeVerifier: oauthState.codeVerifier,
   })
 
-  const previousProfile = await maybeLoadProfileFromToken(tokens.access_token)
-  const profile = previousProfile ?? (await fetchGoogleProfile(tokens.access_token))
+  const profile = await fetchGoogleProfile(tokens.access_token)
   const existingTokens = await getStoredTokens(profile.sub)
 
   const nextTokens: StoredTokens = {
@@ -156,8 +155,10 @@ export async function getSessionContext(): Promise<SessionContext | null> {
   }
 
   const session = JSON.parse(sessionValue) as StoredSession
-  const profile = await getStoredProfile(session.userSub)
-  const tokens = await getStoredTokens(session.userSub)
+  const [profile, tokens] = await Promise.all([
+    getStoredProfile(session.userSub),
+    getStoredTokens(session.userSub),
+  ])
 
   if (!profile || !tokens) {
     return null
@@ -312,32 +313,6 @@ async function fetchGoogleProfile(accessToken: string): Promise<StoredProfile> {
     name: data.name,
     picture: data.picture,
   }
-}
-
-async function maybeLoadProfileFromToken(accessToken: string) {
-  const response = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-    },
-  })
-
-  if (!response.ok) {
-    return null
-  }
-
-  const data = (await response.json()) as {
-    sub: string
-    email: string
-    name: string
-    picture?: string
-  }
-
-  return {
-    sub: data.sub,
-    email: data.email,
-    name: data.name,
-    picture: data.picture,
-  } satisfies StoredProfile
 }
 
 async function ensureFreshAccessToken(userSub: string, tokens: StoredTokens) {

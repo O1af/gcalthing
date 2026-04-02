@@ -167,11 +167,17 @@ async function finalizeReviewDraft(params: {
       }
     : { type: 'create' as const }
 
-  const draft = reviewDraftSchema.parse({
+  const draft = {
     attendeeGroups,
     calendarContext: summarizeCalendarContext(calendars, recentEvents),
     calendarSuggestions,
-    calendars,
+    calendars: calendars.map((c) => ({
+      id: c.id,
+      summary: c.summary,
+      primary: Boolean(c.primary),
+      timeZone: c.timeZone ?? null,
+      accessRole: c.accessRole,
+    })),
     conflictCheck,
     event,
     existingEventMatches: existingEventMatches.map((match) => ({
@@ -181,9 +187,9 @@ async function finalizeReviewDraft(params: {
     factsContext,
     intent: normalizedIntent,
     proposedAction,
-    reviewBlockers: [],
-    smartSignals: [],
-  })
+    reviewBlockers: [] as ReviewDraft['reviewBlockers'],
+    smartSignals: [] as ReviewDraft['smartSignals'],
+  }
 
   draft.reviewBlockers = buildReviewBlockers(draft)
   draft.smartSignals = buildSmartSignals(draft)

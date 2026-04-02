@@ -1,5 +1,4 @@
 import type {
-  FactChange,
   FactChangeSet,
   FactRecord,
   FactsContext,
@@ -205,16 +204,14 @@ function upsertFact({
   for (const fact of activeMatches) {
     fact.status = 'stale'
     fact.lastObservedAt = now
-    changes.staled.push(
-      createFactChange({
-        action: 'staled',
-        kind,
-        nextValue: null,
-        previousValue: fact.value,
-        reason: `${reason}; replaced by a newer confirmed value after ${actionPerformed}.`,
-        subject,
-      }),
-    )
+    changes.staled.push({
+      action: 'staled',
+      kind,
+      nextValue: null,
+      previousValue: fact.value,
+      reason: `${reason}; replaced by a newer confirmed value after ${actionPerformed}.`,
+      subject,
+    })
   }
 
   const nextFact: FactRecord = {
@@ -232,20 +229,14 @@ function upsertFact({
   facts.push(nextFact)
 
   const action = activeMatches.length > 0 ? 'updated' : 'created'
-  changes[action].push(
-    createFactChange({
-      action,
-      kind,
-      nextValue: value,
-      previousValue: activeMatches[0]?.value ?? null,
-      reason,
-      subject,
-    }),
-  )
-}
-
-function createFactChange(change: FactChange): FactChange {
-  return change
+  changes[action].push({
+    action,
+    kind,
+    nextValue: value,
+    previousValue: activeMatches[0]?.value ?? null,
+    reason,
+    subject,
+  })
 }
 
 function factsKey(userSub: string) {

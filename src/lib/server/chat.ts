@@ -18,7 +18,7 @@ import type {
   SubmitEventResponse,
 } from '@/lib/contracts'
 import { draftIntentSchema } from '@/lib/contracts'
-import { deriveEndTime, formatRfc3339InTimeZone } from '@/lib/domain/date-time'
+import { deriveEndTime, formatRfc3339InTimeZone, getDurationMinutes } from '@/lib/domain/date-time'
 import { buildChatSystemPrompt } from '@/lib/server/chat-system-prompt'
 import { getOpenAIModel } from '@/lib/server/ai-model'
 import { logDebug, withDebugTiming } from '@/lib/server/debug'
@@ -382,81 +382,13 @@ function buildTurnTools(params: {
       description: 'Update an existing Google Calendar event. Provide the event id, calendar id, and changed fields.',
       inputSchema: updateEventInputSchema,
       execute: async ({ calendarId, eventId, ...eventInput }) =>
-        executeLoggedTool('update_event', turnId, async () => {
-          if (!session) {
-            return signInRequiredResult(setNotice, 'Sign in with Google before updating events.')
-          }
-
-          const normalized = await normalizeUpdateRequest({
-            accessToken: session.tokens.accessToken,
-            calendarId,
-            eventId,
-            eventInput,
-            localTimeZone: input.localTimeZone,
-            sourceInputs: input.sourceInputs,
-            userSub: session.profile.sub,
-          })
-          if (normalized.request == null) {
-            return { detail: normalized.detail }
-          }
-
-          const approvalBlock = ensureApprovalAllowed({
-            action: 'update',
-            executionMode,
-            latestUserText: input.latestUserText,
-            messages: input.messages,
-            summary: normalized.summary,
-          })
-          if (approvalBlock) {
-            return { detail: approvalBlock }
-          }
-
-          return submitWriteRequest({
-            request: normalized.request,
-            session,
-            setNotice,
-          })
-        }),
+        executeUpdateOrReschedule('update_event', 'update', { calendarId, eventId, eventInput, executionMode, input, session, setNotice, turnId }),
     }),
     reschedule_event: tool({
       description: 'Reschedule an existing Google Calendar event by changing its date and or time fields.',
       inputSchema: updateEventInputSchema,
       execute: async ({ calendarId, eventId, ...eventInput }) =>
-        executeLoggedTool('reschedule_event', turnId, async () => {
-          if (!session) {
-            return signInRequiredResult(setNotice, 'Sign in with Google before rescheduling events.')
-          }
-
-          const normalized = await normalizeUpdateRequest({
-            accessToken: session.tokens.accessToken,
-            calendarId,
-            eventId,
-            eventInput,
-            localTimeZone: input.localTimeZone,
-            sourceInputs: input.sourceInputs,
-            userSub: session.profile.sub,
-          })
-          if (normalized.request == null) {
-            return { detail: normalized.detail }
-          }
-
-          const approvalBlock = ensureApprovalAllowed({
-            action: 'reschedule',
-            executionMode,
-            latestUserText: input.latestUserText,
-            messages: input.messages,
-            summary: normalized.summary,
-          })
-          if (approvalBlock) {
-            return { detail: approvalBlock }
-          }
-
-          return submitWriteRequest({
-            request: normalized.request,
-            session,
-            setNotice,
-          })
-        }),
+        executeUpdateOrReschedule('reschedule_event', 'reschedule', { calendarId, eventId, eventInput, executionMode, input, session, setNotice, turnId }),
     }),
     delete_event: tool({
       description: 'Delete a specific Google Calendar event by calendar id and event id.',
@@ -574,9 +506,12 @@ async function normalizeUpdateRequest(params: {
     listWritableCalendars,
   } = await import('@/lib/server/google-calendar')
   const { buildSignedInReviewDraft } = await import('@/lib/server/review-draft')
-  const calendars = await listWritableCalendars(accessToken)
+  const [calendars, currentEvent] = await Promise.all([
+    listWritableCalendars(accessToken),
+    getGoogleCalendarEvent(accessToken, calendarId, calendarId, eventId),
+  ])
   const calendarName = calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId
-  const currentEvent = await getGoogleCalendarEvent(accessToken, calendarId, calendarName, eventId)
+  currentEvent.calendarName = calendarName
   const intent = mergeIntent(
     buildIntentFromGoogleEvent(currentEvent, localTimeZone),
     eventInput,
@@ -640,6 +575,58 @@ async function submitWriteRequest(params: {
           ? 'Updated the existing Google Calendar event.'
           : 'Deleted the Google Calendar event.',
   }
+}
+
+async function executeUpdateOrReschedule(
+  toolName: string,
+  action: 'update' | 'reschedule',
+  params: {
+    calendarId: string
+    eventId: string
+    eventInput: z.infer<typeof eventInputSchema>
+    executionMode: ExecutionMode
+    input: AssistantTurnInput
+    session: SessionContext
+    setNotice: (notice: ChatNotice | null) => void
+    turnId: string
+  },
+) {
+  const { calendarId, eventId, eventInput, executionMode, input, session, setNotice, turnId } = params
+  return executeLoggedTool(toolName, turnId, async () => {
+    if (!session) {
+      return signInRequiredResult(setNotice, `Sign in with Google before ${action === 'reschedule' ? 'rescheduling' : 'updating'} events.`)
+    }
+
+    const normalized = await normalizeUpdateRequest({
+      accessToken: session.tokens.accessToken,
+      calendarId,
+      eventId,
+      eventInput,
+      localTimeZone: input.localTimeZone,
+      sourceInputs: input.sourceInputs,
+      userSub: session.profile.sub,
+    })
+    if (normalized.request == null) {
+      return { detail: normalized.detail }
+    }
+
+    const approvalBlock = ensureApprovalAllowed({
+      action,
+      executionMode,
+      latestUserText: input.latestUserText,
+      messages: input.messages,
+      summary: normalized.summary,
+    })
+    if (approvalBlock) {
+      return { detail: approvalBlock }
+    }
+
+    return submitWriteRequest({
+      request: normalized.request,
+      session,
+      setNotice,
+    })
+  })
 }
 
 function ensureApprovalAllowed(params: {
@@ -801,8 +788,7 @@ function buildIntentFromGoogleEvent(
   const endDate = event.end?.date ?? event.end?.dateTime?.slice(0, 10) ?? date
   const startTime = event.start?.dateTime?.slice(11, 16) ?? null
   const endTime = event.end?.dateTime?.slice(11, 16) ?? null
-  const durationMinutes =
-    !isAllDay && startTime && endTime ? getDurationMinutes(startTime, endTime) : null
+  const durationMinutes = !isAllDay ? getDurationMinutes(event) : null
 
   return draftIntentSchema.parse({
     allDay: isAllDay,
@@ -891,15 +877,6 @@ function removeUndefined<T extends Record<string, unknown>>(value: T): Partial<T
   ) as Partial<T>
 }
 
-function getDurationMinutes(startTime: string, endTime: string) {
-  const [startHours, startMinutes] = startTime.split(':').map(Number)
-  const [endHours, endMinutes] = endTime.split(':').map(Number)
-  const start = startHours * 60 + startMinutes
-  const end = endHours * 60 + endMinutes
-
-  return Math.max(end >= start ? end - start : end + 24 * 60 - start, 1)
-}
-
 async function executeLoggedTool<T>(
   toolName: string,
   turnId: string,
@@ -928,8 +905,8 @@ function summarizeToolResult(result: unknown): string {
     return String(result)
   }
 
-  if ('detail' in result) {
-    return 'object'
+  if ('detail' in result && typeof (result as Record<string, unknown>).detail === 'string') {
+    return (result as Record<string, string>).detail
   }
 
   return 'object'

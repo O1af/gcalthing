@@ -16,7 +16,7 @@ import {
   conflictCheckResultSchema,
   getSelectedAttendees,
 } from '@/lib/contracts'
-import { clamp, normalizePerson, normalizeText, similarity } from '@/lib/domain/text'
+import { clamp, normalizeText, similarity } from '@/lib/domain/text'
 
 interface AttendeeAggregate {
   displayName: string
@@ -32,7 +32,6 @@ export function summarizeCalendarContext(
 ): CalendarContextSummary {
   const titleCounts = new Map<string, number>()
   const locationCounts = new Map<string, number>()
-  const attendeeDirectory = new Map<string, AttendeeAggregate>()
 
   for (const event of events) {
     const summary = event.summary?.trim()
@@ -44,25 +43,9 @@ export function summarizeCalendarContext(
     if (location) {
       locationCounts.set(location, (locationCounts.get(location) ?? 0) + 1)
     }
-
-    for (const attendee of event.attendees ?? []) {
-      if (!attendee.email) {
-        continue
-      }
-
-      const key = attendee.email.toLowerCase()
-      const current = attendeeDirectory.get(key)
-      const lastSeenAt = getEventStart(event) ?? new Date(0).toISOString()
-      attendeeDirectory.set(key, {
-        calendarIds: current?.calendarIds ?? new Set<string>(),
-        count: (current?.count ?? 0) + 1,
-        displayName: attendee.displayName || current?.displayName || attendee.email,
-        email: attendee.email,
-        lastSeenAt: !current || current.lastSeenAt < lastSeenAt ? lastSeenAt : current.lastSeenAt,
-      })
-      attendeeDirectory.get(key)?.calendarIds.add(event.calendarId)
-    }
   }
+
+  const attendeeDirectory = buildAttendeeDirectory(events)
 
   return calendarContextSummarySchema.parse({
     attendeeDirectory: [...attendeeDirectory.values()]
@@ -102,14 +85,14 @@ export function resolveAttendeeGroups(
 
   return intent.attendeeMentions.map((mention) => {
     const previousGroup = previousGroups.find(
-      (group) => normalizePerson(group.mention) === normalizePerson(mention.name),
+      (group) => normalizeText(group.mention) === normalizeText(mention.name),
     )
     const factCandidates = factsContext.facts
       .filter(
         (fact) =>
           fact.status === 'active' &&
           fact.kind === 'attendee-alias' &&
-          normalizeText(fact.subject) === normalizePerson(mention.name),
+          normalizeText(fact.subject) === normalizeText(mention.name),
       )
       .map<AttendeeCandidate>((fact) => ({
         mention: mention.name,
@@ -124,12 +107,12 @@ export function resolveAttendeeGroups(
       }))
 
     const calendarCandidates = [...directory.values()].map<AttendeeCandidate>((candidate) => {
-      const exactName = normalizePerson(mention.name) === normalizePerson(candidate.displayName)
-      const firstNameMatch = normalizePerson(candidate.displayName)
+      const exactName = normalizeText(mention.name) === normalizeText(candidate.displayName)
+      const firstNameMatch = normalizeText(candidate.displayName)
         .split(' ')[0]
-        ?.startsWith(normalizePerson(mention.name))
+        ?.startsWith(normalizeText(mention.name))
       const emailLocal = candidate.email.split('@')[0] ?? ''
-      const localMatch = emailLocal.includes(normalizePerson(mention.name))
+      const localMatch = emailLocal.includes(normalizeText(mention.name))
       const recencyBonus = recencyScore(candidate.lastSeenAt)
       const frequencyBonus = Math.min(candidate.count / 8, 0.25)
       const confidence = clamp(
