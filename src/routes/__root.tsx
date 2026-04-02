@@ -8,12 +8,16 @@ import appCss from '../styles.css?url'
 const GOOGLE_FONTS_URL =
   'https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;700&display=swap'
 
-const TanStackDevtools = lazy(() =>
-  import('@tanstack/react-devtools').then((m) => ({ default: m.TanStackDevtools })),
-)
-const TanStackRouterDevtoolsPanel = lazy(() =>
-  import('@tanstack/react-router-devtools').then((m) => ({ default: m.TanStackRouterDevtoolsPanel })),
-)
+const TanStackDevtools = import.meta.env.DEV
+  ? lazy(() =>
+      import('@tanstack/react-devtools').then((m) => ({ default: m.TanStackDevtools })),
+    )
+  : null
+const TanStackRouterDevtoolsPanel = import.meta.env.DEV
+  ? lazy(() =>
+      import('@tanstack/react-router-devtools').then((m) => ({ default: m.TanStackRouterDevtoolsPanel })),
+    )
+  : null
 
 const THEME_INIT_SCRIPT = `(function(){try{var stored=window.localStorage.getItem('theme');var mode=(stored==='light'||stored==='dark'||stored==='auto')?stored:'auto';var prefersDark=window.matchMedia('(prefers-color-scheme: dark)').matches;var resolved=mode==='auto'?(prefersDark?'dark':'light'):mode;var root=document.documentElement;root.classList.remove('light','dark');root.classList.add(resolved);if(mode==='auto'){root.removeAttribute('data-theme')}else{root.setAttribute('data-theme',mode)}root.style.colorScheme=resolved;}catch(e){}})();`
 
@@ -74,19 +78,21 @@ function RootDocument({ children }: { children: React.ReactNode }) {
                 'border border-[var(--border)] bg-[var(--panel-strong)] text-[var(--foreground)] shadow-[var(--shadow-panel)]',
             }}
           />
-          <Suspense>
-            <TanStackDevtools
-              config={{
-                position: 'bottom-right',
-              }}
-              plugins={[
-                {
-                  name: 'Tanstack Router',
-                  render: <TanStackRouterDevtoolsPanel />,
-                },
-              ]}
-            />
-          </Suspense>
+          {TanStackDevtools && TanStackRouterDevtoolsPanel ? (
+            <Suspense>
+              <TanStackDevtools
+                config={{
+                  position: 'bottom-right',
+                }}
+                plugins={[
+                  {
+                    name: 'Tanstack Router',
+                    render: <TanStackRouterDevtoolsPanel />,
+                  },
+                ]}
+              />
+            </Suspense>
+          ) : null}
           <Scripts />
         </TooltipProvider>
       </body>

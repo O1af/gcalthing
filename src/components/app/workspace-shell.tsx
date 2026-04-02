@@ -61,7 +61,6 @@ import {
 import { CalendarDays, CircleHelp, LogIn, LogOut, Paperclip, RotateCcw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-const STORAGE_KEY = 'gcalthing-chat-session'
 const EXECUTION_MODE_KEY = 'gcalthing-execution-mode'
 const FAQ_ITEMS = [
   {
@@ -91,100 +90,14 @@ interface WorkspaceShellProps {
 }
 
 export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>('approval-first')
-  const executionModeRef = useRef<ExecutionMode>('approval-first')
-  const localTimeZoneRef = useRef(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const transportRef = useRef<DefaultChatTransport<AppChatMessage> | null>(null)
-
-  if (!transportRef.current) {
-    transportRef.current = new DefaultChatTransport<AppChatMessage>({
-      api: '/api/chat',
-      prepareSendMessagesRequest: ({ messages }) => ({
-        body: {
-          executionMode: executionModeRef.current,
-          localTimeZone: localTimeZoneRef.current,
-          messages,
-        },
-      }),
-    })
-  }
-
-  const { messages, sendMessage, setMessages, status, stop } = useChat<AppChatMessage>({
-    dataPartSchemas: {
-      chatNotice: chatNoticeSchema,
-    },
-    id: 'workspace-chat',
-    transport: transportRef.current,
-  })
-
-  useEffect(() => {
-    executionModeRef.current = executionMode
-  }, [executionMode])
-
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(EXECUTION_MODE_KEY)
-      const parsed = executionModeSchema.safeParse(stored)
-      if (parsed.success) {
-        setExecutionMode(parsed.data)
-      }
-    } catch {
-      // Ignore stale local storage.
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(EXECUTION_MODE_KEY, executionMode)
-    } catch {
-      // Ignore local storage write failures.
-    }
-  }, [executionMode])
-
-  useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem(STORAGE_KEY)
-      if (!raw) {
-        return
-      }
-
-      const parsed = JSON.parse(raw) as {
-        messages: AppChatMessage[]
-      }
-
-      setMessages(parsed.messages ?? [])
-    } catch {
-      // Ignore stale session storage.
-    }
-  }, [setMessages])
-
-  useEffect(() => {
-    clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => {
-      window.sessionStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          messages,
-        }),
-      )
-    }, 500)
-
-    return () => clearTimeout(saveTimerRef.current)
-  }, [messages])
+  const [executionMode, setExecutionMode] = useExecutionMode()
+  const { messages, sendMessage, setMessages, status, stop } =
+    useWorkspaceChat(executionMode)
 
   const handleClearChat = useCallback(() => {
     stop()
     setMessages([])
-    window.sessionStorage.removeItem(STORAGE_KEY)
   }, [stop, setMessages])
-
-  const handleExecutionModeChange = useCallback((nextMode: string) => {
-    const parsed = executionModeSchema.safeParse(nextMode)
-    if (parsed.success) {
-      setExecutionMode(parsed.data)
-    }
-  }, [])
 
   const handlePromptSubmit = useCallback(async (message: PromptInputMessage) => {
     if (!message.text.trim() && message.files.length === 0) {
@@ -195,6 +108,10 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
       files: message.files,
       text: message.text,
     })
+  }, [sendMessage])
+
+  const handleSuggestionClick = useCallback((text: string) => {
+    void sendMessage({ files: [], text })
   }, [sendMessage])
 
   const hasContent = messages.length > 0
@@ -208,7 +125,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
         </div>
 
         <div className="flex items-center gap-2">
-          <Select onValueChange={handleExecutionModeChange} value={executionMode}>
+          <Select onValueChange={setExecutionMode} value={executionMode}>
             <SelectTrigger className="hidden min-w-38 sm:flex" size="sm">
               <SelectValue />
             </SelectTrigger>
@@ -279,7 +196,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
                 title=""
               >
                 <EmptyWorkspaceState
-                  onSuggestionClick={(text) => sendMessage({ text, files: [] })}
+                  onSuggestionClick={handleSuggestionClick}
                   viewer={viewer}
                 />
               </ConversationEmptyState>
@@ -324,6 +241,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
 
         <div className="shrink-0 pt-2">
           <PromptInput
+            canSubmit={status !== 'submitted' && status !== 'streaming'}
             className="w-full"
             globalDrop
             maxFiles={4}
@@ -347,6 +265,70 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
       </main>
     </div>
   )
+}
+
+function useExecutionMode(): [ExecutionMode, (nextMode: string) => void] {
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('approval-first')
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(EXECUTION_MODE_KEY)
+      const parsed = executionModeSchema.safeParse(stored)
+      if (parsed.success) {
+        setExecutionMode(parsed.data)
+      }
+    } catch {
+      // Ignore stale local storage.
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(EXECUTION_MODE_KEY, executionMode)
+    } catch {
+      // Ignore local storage write failures.
+    }
+  }, [executionMode])
+
+  const handleExecutionModeChange = useCallback((nextMode: string) => {
+    const parsed = executionModeSchema.safeParse(nextMode)
+    if (parsed.success) {
+      setExecutionMode(parsed.data)
+    }
+  }, [])
+
+  return [executionMode, handleExecutionModeChange]
+}
+
+function useWorkspaceChat(executionMode: ExecutionMode) {
+  const executionModeRef = useRef(executionMode)
+  const localTimeZoneRef = useRef(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+  const transportRef = useRef<DefaultChatTransport<AppChatMessage> | null>(null)
+
+  useEffect(() => {
+    executionModeRef.current = executionMode
+  }, [executionMode])
+
+  if (!transportRef.current) {
+    transportRef.current = new DefaultChatTransport<AppChatMessage>({
+      api: '/api/chat',
+      prepareSendMessagesRequest: ({ messages }) => ({
+        body: {
+          executionMode: executionModeRef.current,
+          localTimeZone: localTimeZoneRef.current,
+          messages,
+        },
+      }),
+    })
+  }
+
+  return useChat<AppChatMessage>({
+    dataPartSchemas: {
+      chatNotice: chatNoticeSchema,
+    },
+    id: 'workspace-chat',
+    transport: transportRef.current,
+  })
 }
 
 function ComposerAttachments(): React.JSX.Element | null {
