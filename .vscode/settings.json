@@ -7,5 +7,18 @@
   },
   "files.readonlyInclude": {
     "**/routeTree.gen.ts": true
-  }
+  },
+  "files.exclude": {
+    "**/.env": false,
+    "**/.cta.json": true,
+    "**/.pnpm-lock.yaml": true,
+    "**/.worker-configuration.d.ts": true,
+    "**/.gitignore": false
+  },
+  "oxc.lint.enable": true,
+  "oxc.lint.configPath": ".vscode/oxlintrc.json",
+  "oxc.format.enable": true,
+  "oxc.format.configPath": ".vscode/oxfmtrc.json",
+  "oxc.path.oxfmt": "./node_modules/.bin/oxfmt",
+  "oxc.path.oxlint": "./node_modules/.bin/oxlint"
 }

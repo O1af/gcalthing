@@ -5,7 +5,7 @@ export type AppChatMessage = UIMessage<never, { chatNotice: ChatNotice }>
 
 type TextSourceType = Extract<SourceInput, { kind: 'text' }>['sourceType']
 
-export function getMessageText(message: AppChatMessage): string {
+export function getMessageText(message: Pick<UIMessage, 'parts'>): string {
   return message.parts
     .filter((part) => part.type === 'text')
     .map((part) => part.text)

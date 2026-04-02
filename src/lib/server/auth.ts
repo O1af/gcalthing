@@ -392,3 +392,10 @@ export function getCurrentRequestPath() {
   const request = getRequest()
   return new URL(request.url).pathname
 }
+
+export function redirect(url: string | URL) {
+  return new Response(null, {
+    status: 302,
+    headers: { location: String(url) },
+  })
+}

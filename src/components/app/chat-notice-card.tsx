@@ -43,17 +43,18 @@ export function EventSuccessCard(props: {
 
 export function SignInRequiredCard(props: {
   notice: Extract<ChatNotice, { kind: 'sign-in-required' }>
-  onSignIn: () => void
 }): React.JSX.Element {
-  const { notice, onSignIn } = props
+  const { notice } = props
 
   return (
     <div className="my-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3">
       <p className="text-sm font-medium">Google sign-in needed</p>
       <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">{notice.detail}</p>
-      <Button className="mt-3 h-8 gap-1.5" onClick={onSignIn} size="sm">
-        <LogIn className="size-3.5" />
-        Sign in with Google
+      <Button asChild className="mt-3 h-8 gap-1.5" size="sm">
+        <a href="/auth/login?returnTo=/">
+          <LogIn className="size-3.5" />
+          Sign in with Google
+        </a>
       </Button>
     </div>
   )

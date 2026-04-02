@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { getMessageText } from "@/lib/chat-ui";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { ArrowDownIcon, DownloadIcon } from "lucide-react";
@@ -12,7 +13,7 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
-    className={cn("relative flex-1 overflow-y-hidden", className)}
+    className={cn("relative flex-1 overflow-y-hidden overscroll-contain", className)}
     initial="smooth"
     resize="smooth"
     role="log"
@@ -84,6 +85,7 @@ export const ConversationScrollButton = ({
   return (
     !isAtBottom && (
       <Button
+        aria-label="Scroll to bottom"
         className={cn(
           "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted",
           className
@@ -99,12 +101,6 @@ export const ConversationScrollButton = ({
     )
   );
 };
-
-const getMessageText = (message: UIMessage): string =>
-  message.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("");
 
 export type ConversationDownloadProps = Omit<
   ComponentProps<typeof Button>,
@@ -151,18 +147,19 @@ export const ConversationDownload = ({
   }, [messages, filename, formatMessage]);
 
   return (
-    <Button
-      className={cn(
-        "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
-        className
-      )}
-      onClick={handleDownload}
-      size="icon"
-      type="button"
-      variant="outline"
-      {...props}
-    >
-      {children ?? <DownloadIcon className="size-4" />}
-    </Button>
+      <Button
+        aria-label="Download conversation"
+        className={cn(
+          "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
+          className
+        )}
+        onClick={handleDownload}
+        size="icon"
+        type="button"
+        variant="outline"
+        {...props}
+      >
+        {children ?? <DownloadIcon className="size-4" />}
+      </Button>
   );
 };

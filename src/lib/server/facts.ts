@@ -13,6 +13,7 @@ import {
 } from '@/lib/contracts'
 import { normalizeText } from '@/lib/domain/text'
 import { decryptJson, encryptJson } from '@/lib/server/crypto'
+import { logDebugError } from '@/lib/server/debug'
 import { getServerEnv } from '@/lib/server/env'
 
 const FACTS_PREFIX = 'facts'
@@ -27,7 +28,8 @@ export async function loadFactsContext(userSub: string): Promise<FactsContext> {
   try {
     const facts = await decryptJson<FactRecord[]>(env.TOKEN_ENCRYPTION_SECRET, stored)
     return buildFactsContext(facts)
-  } catch {
+  } catch (error) {
+    logDebugError('facts', 'loadFactsContext:decrypt-failed', error, { userSub })
     return emptyFactsContext
   }
 }
@@ -99,69 +101,18 @@ function createFactChangeSet(
     })
   }
 
-  if (titleHint && request.event.durationMinutes) {
-    upsertFact({
-      actionPerformed,
-      changes,
-      facts,
-      kind: 'duration-pattern',
-      now,
-      reason: 'Confirmed event duration after calendar write',
-      subject: titleHint,
-      value: String(request.event.durationMinutes),
-    })
-  }
+  const eventFactSpecs: Array<{ guard: unknown; kind: FactRecord['kind']; value: string | undefined | null; reason: string }> = [
+    { guard: request.event.durationMinutes, kind: 'duration-pattern', value: request.event.durationMinutes ? String(request.event.durationMinutes) : null, reason: 'Confirmed event duration after calendar write' },
+    { guard: request.event.location, kind: 'location-pattern', value: request.event.location?.trim(), reason: 'Confirmed event location after calendar write' },
+    { guard: request.event.calendarId, kind: 'calendar-pattern', value: request.event.calendarId, reason: 'Confirmed calendar choice after calendar write' },
+    { guard: request.event.recurrenceRule, kind: 'recurrence-pattern', value: request.event.recurrenceRule, reason: 'Confirmed recurrence after calendar write' },
+    { guard: true, kind: 'title-pattern', value: request.event.title.trim(), reason: 'Confirmed title pattern after calendar write' },
+  ]
 
-  if (titleHint && request.event.location) {
-    upsertFact({
-      actionPerformed,
-      changes,
-      facts,
-      kind: 'location-pattern',
-      now,
-      reason: 'Confirmed event location after calendar write',
-      subject: titleHint,
-      value: request.event.location.trim(),
-    })
-  }
-
-  if (titleHint && request.event.calendarId) {
-    upsertFact({
-      actionPerformed,
-      changes,
-      facts,
-      kind: 'calendar-pattern',
-      now,
-      reason: 'Confirmed calendar choice after calendar write',
-      subject: titleHint,
-      value: request.event.calendarId,
-    })
-  }
-
-  if (titleHint && request.event.recurrenceRule) {
-    upsertFact({
-      actionPerformed,
-      changes,
-      facts,
-      kind: 'recurrence-pattern',
-      now,
-      reason: 'Confirmed recurrence after calendar write',
-      subject: titleHint,
-      value: request.event.recurrenceRule,
-    })
-  }
-
-  if (titleHint) {
-    upsertFact({
-      actionPerformed,
-      changes,
-      facts,
-      kind: 'title-pattern',
-      now,
-      reason: 'Confirmed title pattern after calendar write',
-      subject: titleHint,
-      value: request.event.title.trim(),
-    })
+  for (const spec of eventFactSpecs) {
+    if (titleHint && spec.guard && spec.value) {
+      upsertFact({ actionPerformed, changes, facts, kind: spec.kind, now, reason: spec.reason, subject: titleHint, value: spec.value })
+    }
   }
 
   return changes

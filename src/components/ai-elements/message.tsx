@@ -8,22 +8,16 @@ import {
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import { streamdownPlugins } from "@/lib/streamdown-config";
+import { cn, createSafeContext } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import {
-  createContext,
   memo,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
@@ -99,14 +93,12 @@ export const MessageAction = ({
 
   if (tooltip) {
     return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>{button}</TooltipTrigger>
-          <TooltipContent>
-            <p>{tooltip}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent>
+          <p>{tooltip}</p>
+        </TooltipContent>
+      </Tooltip>
     );
   }
 
@@ -122,21 +114,8 @@ interface MessageBranchContextType {
   setBranches: (branches: ReactElement[]) => void;
 }
 
-const MessageBranchContext = createContext<MessageBranchContextType | null>(
-  null
-);
-
-const useMessageBranch = () => {
-  const context = useContext(MessageBranchContext);
-
-  if (!context) {
-    throw new Error(
-      "MessageBranch components must be used within MessageBranch"
-    );
-  }
-
-  return context;
-};
+const [MessageBranchProvider, useMessageBranch] =
+  createSafeContext<MessageBranchContextType>("MessageBranch");
 
 export type MessageBranchProps = HTMLAttributes<HTMLDivElement> & {
   defaultBranch?: number;
@@ -185,12 +164,12 @@ export const MessageBranch = ({
   );
 
   return (
-    <MessageBranchContext.Provider value={contextValue}>
+    <MessageBranchProvider value={contextValue}>
       <div
         className={cn("grid w-full gap-2 [&>div]:pb-0", className)}
         {...props}
       />
-    </MessageBranchContext.Provider>
+    </MessageBranchProvider>
   );
 };
 
@@ -309,7 +288,7 @@ export const MessageBranchPage = ({
   return (
     <ButtonGroupText
       className={cn(
-        "border-none bg-transparent text-muted-foreground shadow-none",
+        "border-none bg-transparent text-muted-foreground shadow-none tabular-nums",
         className
       )}
       {...props}
@@ -320,8 +299,6 @@ export const MessageBranchPage = ({
 };
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
-
-const streamdownPlugins = { cjk, code, math, mermaid };
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (

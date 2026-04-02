@@ -3,11 +3,17 @@ import type {
   FactsContext,
   RefreshReviewDraftRequest,
   ReviewDraft,
-} from '@/lib/contracts'
-import { emptyFactsContext, existingEventMatchSchema, reviewDraftSchema } from '@/lib/contracts'
-import { deriveEndTime, formatRfc3339InTimeZone, getDurationMinutes } from '@/lib/domain/date-time'
-import { normalizeText, similarity } from '@/lib/domain/text'
-import { logDebugError } from '@/lib/server/debug'
+} from "@/lib/contracts";
+import { emptyFactsContext, existingEventMatchSchema, reviewDraftSchema } from "@/lib/contracts";
+import { deriveEndTime, formatRfc3339InTimeZone, getDurationMinutes } from "@/lib/domain/date-time";
+import { normalizeText, similarity } from "@/lib/domain/text";
+import {
+  CALENDAR_CONFIDENCE_GAP,
+  CALENDAR_CONFIDENCE_THRESHOLD,
+  SIMILARITY_MODERATE,
+  SIMILARITY_STRICT,
+} from "@/lib/server/similarity-thresholds";
+import { logDebugError } from "@/lib/server/debug";
 import {
   buildConflictCheckResult,
   buildReviewBlockers,
@@ -16,33 +22,40 @@ import {
   resolveAttendeeGroups,
   suggestCalendars,
   summarizeCalendarContext,
-} from '@/lib/server/calendar-context'
-import { loadFactsContext } from '@/lib/server/facts'
+} from "@/lib/server/calendar-context";
+import { loadFactsContext } from "@/lib/server/facts";
 import {
   listRecentEvents,
   listWritableCalendars,
   queryFreeBusy,
   type GoogleCalendarEvent,
   type GoogleCalendarListEntry,
-} from '@/lib/server/google-calendar'
+} from "@/lib/server/google-calendar";
 
 interface ExplicitUpdateTarget {
-  calendarId: string
-  eventId: string
-  start?: string | null
-  title: string
+  calendarId: string;
+  eventId: string;
+  start?: string | null;
+  title: string;
 }
 
 export async function buildSignedInReviewDraft(params: {
-  accessToken: string
-  intent: DraftIntent
-  localTimeZone: string
-  previousDraft?: ReviewDraft | null
-  selectedUpdateTarget?: ExplicitUpdateTarget | null
-  userSub: string
+  accessToken: string;
+  intent: DraftIntent;
+  localTimeZone: string;
+  previousDraft?: ReviewDraft | null;
+  selectedUpdateTarget?: ExplicitUpdateTarget | null;
+  userSub: string;
 }) {
-  const { accessToken, intent, localTimeZone, previousDraft = null, selectedUpdateTarget, userSub } = params
-  const { calendars, factsContext, recentEvents } = await loadReviewContext(accessToken, userSub)
+  const {
+    accessToken,
+    intent,
+    localTimeZone,
+    previousDraft = null,
+    selectedUpdateTarget,
+    userSub,
+  } = params;
+  const { calendars, factsContext, recentEvents } = await loadReviewContext(accessToken, userSub);
 
   return finalizeReviewDraft({
     accessToken,
@@ -53,16 +66,16 @@ export async function buildSignedInReviewDraft(params: {
     previousDraft,
     recentEvents,
     selectedUpdateTarget: selectedUpdateTarget ?? null,
-  })
+  });
 }
 
 export async function buildUnsignedReviewDraft(params: {
-  intent: DraftIntent
-  localTimeZone: string
-  previousDraft?: ReviewDraft | null
-  selectedUpdateTarget?: ExplicitUpdateTarget | null
+  intent: DraftIntent;
+  localTimeZone: string;
+  previousDraft?: ReviewDraft | null;
+  selectedUpdateTarget?: ExplicitUpdateTarget | null;
 }) {
-  const { intent, localTimeZone, previousDraft = null, selectedUpdateTarget } = params
+  const { intent, localTimeZone, previousDraft = null, selectedUpdateTarget } = params;
 
   return finalizeReviewDraft({
     accessToken: null,
@@ -73,16 +86,16 @@ export async function buildUnsignedReviewDraft(params: {
     previousDraft,
     recentEvents: [],
     selectedUpdateTarget: selectedUpdateTarget ?? null,
-  })
+  });
 }
 
 export async function refreshSignedInReviewDraft(params: {
-  accessToken: string
-  request: RefreshReviewDraftRequest
-  userSub: string
+  accessToken: string;
+  request: RefreshReviewDraftRequest;
+  userSub: string;
 }) {
-  const { accessToken, request, userSub } = params
-  const intent = syncIntentWithEvent(request.draft.intent, request.draft.event)
+  const { accessToken, request, userSub } = params;
+  const intent = syncIntentWithEvent(request.draft.intent, request.draft.event);
 
   return buildSignedInReviewDraft({
     accessToken,
@@ -91,32 +104,30 @@ export async function refreshSignedInReviewDraft(params: {
     previousDraft: request.draft,
     selectedUpdateTarget: selectedUpdateTargetFromDraft(request.draft),
     userSub,
-  })
+  });
 }
 
-export async function refreshUnsignedReviewDraft(params: {
-  request: RefreshReviewDraftRequest
-}) {
-  const { request } = params
-  const intent = syncIntentWithEvent(request.draft.intent, request.draft.event)
+export async function refreshUnsignedReviewDraft(params: { request: RefreshReviewDraftRequest }) {
+  const { request } = params;
+  const intent = syncIntentWithEvent(request.draft.intent, request.draft.event);
 
   return buildUnsignedReviewDraft({
     intent,
     localTimeZone: request.localTimeZone,
     previousDraft: request.draft,
     selectedUpdateTarget: selectedUpdateTargetFromDraft(request.draft),
-  })
+  });
 }
 
 async function finalizeReviewDraft(params: {
-  accessToken: string | null
-  calendars: GoogleCalendarListEntry[]
-  factsContext: FactsContext
-  intent: DraftIntent
-  localTimeZone: string
-  previousDraft: ReviewDraft | null
-  recentEvents: GoogleCalendarEvent[]
-  selectedUpdateTarget: ExplicitUpdateTarget | null
+  accessToken: string | null;
+  calendars: GoogleCalendarListEntry[];
+  factsContext: FactsContext;
+  intent: DraftIntent;
+  localTimeZone: string;
+  previousDraft: ReviewDraft | null;
+  recentEvents: GoogleCalendarEvent[];
+  selectedUpdateTarget: ExplicitUpdateTarget | null;
 }) {
   const {
     accessToken,
@@ -127,22 +138,28 @@ async function finalizeReviewDraft(params: {
     previousDraft,
     recentEvents,
     selectedUpdateTarget,
-  } = params
+  } = params;
 
   const attendeeGroups = mergeAttendeeGroupState(
     resolveAttendeeGroups(intent, recentEvents, factsContext, previousDraft?.attendeeGroups ?? []),
     previousDraft?.attendeeGroups ?? [],
-  )
+  );
   const calendarSuggestions = suggestCalendars(
     intent,
     calendars,
     recentEvents,
     factsContext,
     attendeeGroups,
-  )
-  const selectedCalendarId = pickCalendarId(calendars, calendarSuggestions, intent.calendarId)
-  const event = buildEventFromIntent(intent, localTimeZone, selectedCalendarId, recentEvents, factsContext)
-  const normalizedIntent = syncIntentWithEvent(intent, event)
+  );
+  const selectedCalendarId = pickCalendarId(calendars, calendarSuggestions, intent.calendarId);
+  const event = buildEventFromIntent(
+    intent,
+    localTimeZone,
+    selectedCalendarId,
+    recentEvents,
+    factsContext,
+  );
+  const normalizedIntent = syncIntentWithEvent(intent, event);
   const existingEventMatches = mergeSelectedUpdateTarget(
     detectExistingEventMatches(
       normalizedIntent,
@@ -151,21 +168,25 @@ async function finalizeReviewDraft(params: {
       previousDraft?.existingEventMatches ?? [],
     ),
     selectedUpdateTarget,
-  )
+  );
   const conflictCheck = await maybeRunConflictCheck({
     accessToken,
     calendars,
     calendarSuggestions,
     event,
-  })
-  const selectedMatch = selectExistingEventMatch(existingEventMatches, previousDraft, selectedUpdateTarget)
+  });
+  const selectedMatch = selectExistingEventMatch(
+    existingEventMatches,
+    previousDraft,
+    selectedUpdateTarget,
+  );
   const proposedAction = selectedMatch
     ? {
-        type: 'update' as const,
+        type: "update" as const,
         calendarId: selectedMatch.calendarId,
         eventId: selectedMatch.eventId,
       }
-    : { type: 'create' as const }
+    : { type: "create" as const };
 
   const draft = {
     attendeeGroups,
@@ -187,50 +208,50 @@ async function finalizeReviewDraft(params: {
     factsContext,
     intent: normalizedIntent,
     proposedAction,
-    reviewBlockers: [] as ReviewDraft['reviewBlockers'],
-    smartSignals: [] as ReviewDraft['smartSignals'],
-  }
+    reviewBlockers: [] as ReviewDraft["reviewBlockers"],
+    smartSignals: [] as ReviewDraft["smartSignals"],
+  };
 
-  draft.reviewBlockers = buildReviewBlockers(draft)
-  draft.smartSignals = buildSmartSignals(draft)
-  appendFactsDrivenSuggestions(draft, recentEvents, factsContext)
+  draft.reviewBlockers = buildReviewBlockers(draft);
+  draft.smartSignals = buildSmartSignals(draft);
+  appendFactsDrivenSuggestions(draft, recentEvents, factsContext);
 
-  return reviewDraftSchema.parse(draft)
+  return reviewDraftSchema.parse(draft);
 }
 
 async function maybeRunConflictCheck(params: {
-  accessToken: string | null
-  calendars: GoogleCalendarListEntry[]
-  calendarSuggestions: ReviewDraft['calendarSuggestions']
-  event: ReviewDraft['event']
+  accessToken: string | null;
+  calendars: GoogleCalendarListEntry[];
+  calendarSuggestions: ReviewDraft["calendarSuggestions"];
+  event: ReviewDraft["event"];
 }) {
-  const { accessToken, calendars, calendarSuggestions, event } = params
+  const { accessToken, calendars, calendarSuggestions, event } = params;
   if (!accessToken || !event.date || !event.startTime) {
-    return buildConflictCheckResult([], [])
+    return buildConflictCheckResult([], []);
   }
 
   const checkedCalendarIds = [
     ...new Set([event.calendarId, ...calendarSuggestions.map((item) => item.calendarId)]),
-  ].slice(0, 10)
-  const timeMin = formatRfc3339InTimeZone(event.date, event.startTime, event.timezone ?? 'UTC')
-  const endTime = event.endTime ?? deriveEndTime(event.startTime, event.durationMinutes ?? 60)
+  ].slice(0, 10);
+  const timeMin = formatRfc3339InTimeZone(event.date, event.startTime, event.timezone ?? "UTC");
+  const endTime = event.endTime ?? deriveEndTime(event.startTime, event.durationMinutes ?? 60);
   const timeMax = formatRfc3339InTimeZone(
     event.endDate ?? event.date,
     endTime,
-    event.timezone ?? 'UTC',
-  )
+    event.timezone ?? "UTC",
+  );
 
-  let busy
+  let busy;
   try {
-    busy = await queryFreeBusy(accessToken, checkedCalendarIds, timeMin, timeMax)
+    busy = await queryFreeBusy(accessToken, checkedCalendarIds, timeMin, timeMax);
   } catch (error) {
-    logDebugError('review-draft', 'freeBusyCheck:failed', error, {
+    logDebugError("review-draft", "freeBusyCheck:failed", error, {
       calendarCount: checkedCalendarIds.length,
       timeMax,
       timeMin,
-      timeZone: event.timezone ?? 'UTC',
-    })
-    return buildConflictCheckResult([], [])
+      timeZone: event.timezone ?? "UTC",
+    });
+    return buildConflictCheckResult([], []);
   }
 
   const intervals = checkedCalendarIds.flatMap((calendarId) =>
@@ -240,27 +261,31 @@ async function maybeRunConflictCheck(params: {
       end: interval.end,
       start: interval.start,
     })),
-  )
+  );
 
-  return buildConflictCheckResult(checkedCalendarIds, intervals)
+  return buildConflictCheckResult(checkedCalendarIds, intervals);
 }
 
 function pickCalendarId(
   calendars: GoogleCalendarListEntry[],
-  suggestions: ReviewDraft['calendarSuggestions'],
+  suggestions: ReviewDraft["calendarSuggestions"],
   requestedCalendarId: string | null,
 ) {
   if (requestedCalendarId && calendars.some((calendar) => calendar.id === requestedCalendarId)) {
-    return requestedCalendarId
+    return requestedCalendarId;
   }
 
-  const top = suggestions[0]
-  const second = suggestions[1]
-  if (top && top.confidence >= 0.58 && (!second || top.confidence - second.confidence >= 0.12)) {
-    return top.calendarId
+  const top = suggestions[0];
+  const second = suggestions[1];
+  if (
+    top &&
+    top.confidence >= CALENDAR_CONFIDENCE_THRESHOLD &&
+    (!second || top.confidence - second.confidence >= CALENDAR_CONFIDENCE_GAP)
+  ) {
+    return top.calendarId;
   }
 
-  return calendars.find((calendar) => calendar.primary)?.id ?? requestedCalendarId ?? 'primary'
+  return calendars.find((calendar) => calendar.primary)?.id ?? requestedCalendarId ?? "primary";
 }
 
 function inferDuration(
@@ -269,36 +294,39 @@ function inferDuration(
   factsContext: FactsContext,
 ) {
   if (!intent.title) {
-    return 60
+    return 60;
   }
 
-  const normalizedTitle = normalizeText(intent.title)
+  const normalizedTitle = normalizeText(intent.title);
   const matchingDurations = events
-    .filter((event) => similarity(normalizeText(event.summary ?? ''), normalizedTitle) >= 0.74)
+    .filter(
+      (event) =>
+        similarity(normalizeText(event.summary ?? ""), normalizedTitle) >= SIMILARITY_MODERATE,
+    )
     .map((event) => getDurationMinutes(event))
-    .filter((value): value is number => value != null)
+    .filter((value): value is number => value != null);
 
   const factDurations = factsContext.facts
     .filter(
       (fact) =>
-        fact.status === 'active' &&
-        fact.kind === 'duration-pattern' &&
-        similarity(normalizeText(fact.subject), normalizedTitle) >= 0.74,
+        fact.status === "active" &&
+        fact.kind === "duration-pattern" &&
+        similarity(normalizeText(fact.subject), normalizedTitle) >= SIMILARITY_MODERATE,
     )
     .map((fact) => Number.parseInt(fact.value, 10))
-    .filter((value) => Number.isFinite(value))
+    .filter((value) => Number.isFinite(value));
 
-  const allDurations = [...matchingDurations, ...factDurations]
+  const allDurations = [...matchingDurations, ...factDurations];
   if (allDurations.length === 0) {
-    return 60
+    return 60;
   }
 
-  const buckets = new Map<number, number>()
+  const buckets = new Map<number, number>();
   for (const minutes of allDurations) {
-    buckets.set(minutes, (buckets.get(minutes) ?? 0) + 1)
+    buckets.set(minutes, (buckets.get(minutes) ?? 0) + 1);
   }
 
-  return [...buckets.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? 60
+  return [...buckets.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? 60;
 }
 
 function appendFactsDrivenSuggestions(
@@ -307,20 +335,20 @@ function appendFactsDrivenSuggestions(
   factsContext: FactsContext,
 ) {
   if (!draft.event.location) {
-    const location = suggestLocation(draft.intent, events, factsContext)
+    const location = suggestLocation(draft.intent, events, factsContext);
     if (location) {
       draft.smartSignals.push({
-        label: 'Location candidate',
+        label: "Location candidate",
         detail: `Shared context suggests ${location}. It remains editable because the source did not state it explicitly.`,
-      })
+      });
     }
   }
 
   if (!draft.intent.durationMinutes && draft.event.durationMinutes) {
     draft.smartSignals.unshift({
-      label: 'Duration suggestion',
+      label: "Duration suggestion",
       detail: `Suggested ${draft.event.durationMinutes} minutes from recent history and shared facts.`,
-    })
+    });
   }
 }
 
@@ -330,28 +358,30 @@ function suggestLocation(
   factsContext: FactsContext,
 ) {
   if (!intent.title) {
-    return null
+    return null;
   }
 
-  const normalizedTitle = normalizeText(intent.title)
+  const normalizedTitle = normalizeText(intent.title);
   const recentLocation = events.find(
-    (event) => event.location && similarity(normalizeText(event.summary ?? ''), normalizedTitle) >= 0.8,
-  )?.location
+    (event) =>
+      event.location &&
+      similarity(normalizeText(event.summary ?? ""), normalizedTitle) >= SIMILARITY_STRICT,
+  )?.location;
   if (recentLocation) {
-    return recentLocation
+    return recentLocation;
   }
 
   return (
     factsContext.facts.find(
       (fact) =>
-        fact.status === 'active' &&
-        fact.kind === 'location-pattern' &&
-        similarity(normalizeText(fact.subject), normalizedTitle) >= 0.8,
+        fact.status === "active" &&
+        fact.kind === "location-pattern" &&
+        similarity(normalizeText(fact.subject), normalizedTitle) >= SIMILARITY_STRICT,
     )?.value ?? null
-  )
+  );
 }
 
-function syncIntentWithEvent(intent: DraftIntent, event: ReviewDraft['event']) {
+function syncIntentWithEvent(intent: DraftIntent, event: ReviewDraft["event"]) {
   return {
     ...intent,
     allDay: event.allDay,
@@ -366,24 +396,24 @@ function syncIntentWithEvent(intent: DraftIntent, event: ReviewDraft['event']) {
     startTime: event.startTime,
     timezone: event.timezone,
     title: event.title || intent.title,
-  } satisfies DraftIntent
+  } satisfies DraftIntent;
 }
 
 function selectExistingEventMatch(
-  matches: ReviewDraft['existingEventMatches'],
+  matches: ReviewDraft["existingEventMatches"],
   previousDraft: ReviewDraft | null,
   selectedUpdateTarget: ExplicitUpdateTarget | null,
 ) {
   if (selectedUpdateTarget) {
-    return matches.find((match) => match.eventId === selectedUpdateTarget.eventId) ?? null
+    return matches.find((match) => match.eventId === selectedUpdateTarget.eventId) ?? null;
   }
 
-  const previousAction = previousDraft?.proposedAction
-  if (previousAction?.type === 'update') {
-    return matches.find((match) => match.eventId === previousAction.eventId) ?? matches[0] ?? null
+  const previousAction = previousDraft?.proposedAction;
+  if (previousAction?.type === "update") {
+    return matches.find((match) => match.eventId === previousAction.eventId) ?? matches[0] ?? null;
   }
 
-  return matches.find((match) => match.selected) ?? null
+  return matches.find((match) => match.selected) ?? null;
 }
 
 function buildEventFromIntent(
@@ -393,8 +423,8 @@ function buildEventFromIntent(
   recentEvents: GoogleCalendarEvent[],
   factsContext: FactsContext,
 ) {
-  const inferredDuration = inferDuration(intent, recentEvents, factsContext)
-  const duration = intent.durationMinutes ?? inferredDuration
+  const inferredDuration = inferDuration(intent, recentEvents, factsContext);
+  const duration = intent.durationMinutes ?? inferredDuration;
 
   return {
     allDay: intent.allDay,
@@ -410,85 +440,87 @@ function buildEventFromIntent(
     recurrenceRule: intent.recurrenceRule,
     startTime: intent.startTime,
     timezone: intent.timezone ?? localTimeZone,
-    title: intent.title ?? '',
-  }
+    title: intent.title ?? "",
+  };
 }
 
 function mergeAttendeeGroupState(
-  groups: ReviewDraft['attendeeGroups'],
-  previousGroups: ReviewDraft['attendeeGroups'],
+  groups: ReviewDraft["attendeeGroups"],
+  previousGroups: ReviewDraft["attendeeGroups"],
 ) {
   return groups.map((group) => {
-    const previous = previousGroups.find((item) => item.mention === group.mention)
+    const previous = previousGroups.find((item) => item.mention === group.mention);
     return previous
       ? {
           ...group,
           approved: previous.approved,
           manualEmail: previous.manualEmail,
-          selectedEmail: previous.manualEmail ? null : previous.selectedEmail ?? group.selectedEmail,
+          selectedEmail: previous.manualEmail
+            ? null
+            : (previous.selectedEmail ?? group.selectedEmail),
         }
-      : group
-  })
+      : group;
+  });
 }
 
 function mergeSelectedUpdateTarget(
-  matches: ReviewDraft['existingEventMatches'],
+  matches: ReviewDraft["existingEventMatches"],
   selectedUpdateTarget: ExplicitUpdateTarget | null,
 ) {
   if (!selectedUpdateTarget) {
-    return matches
+    return matches;
   }
 
-  const existingMatch = matches.find((match) => match.eventId === selectedUpdateTarget.eventId)
+  const existingMatch = matches.find((match) => match.eventId === selectedUpdateTarget.eventId);
   if (existingMatch) {
     return matches.map((match) => ({
       ...match,
       selected: match.eventId === selectedUpdateTarget.eventId,
-    }))
+    }));
   }
 
   const selectedMatch = existingEventMatchSchema.parse({
     calendarId: selectedUpdateTarget.calendarId,
     calendarName: selectedUpdateTarget.calendarId,
     eventId: selectedUpdateTarget.eventId,
-    reason: 'Explicitly selected by the agent for update.',
+    reason: "Explicitly selected by the agent for update.",
     score: 1,
     selected: true,
     start: selectedUpdateTarget.start ?? null,
     title: selectedUpdateTarget.title,
-  })
+  });
 
-  return [selectedMatch, ...matches].slice(0, 5)
+  return [selectedMatch, ...matches].slice(0, 5);
 }
 
 function selectedUpdateTargetFromDraft(draft: ReviewDraft): ExplicitUpdateTarget | null {
-  if (draft.proposedAction.type !== 'update') {
-    return null
+  if (draft.proposedAction.type !== "update") {
+    return null;
   }
 
-  const updateAction = draft.proposedAction
+  const updateAction = draft.proposedAction;
 
   const selectedMatch = draft.existingEventMatches.find(
     (match) => match.eventId === updateAction.eventId,
-  )
+  );
 
   return {
     calendarId: updateAction.calendarId,
     eventId: updateAction.eventId,
     start: selectedMatch?.start ?? null,
-    title: selectedMatch?.title ?? (draft.event.title || 'Untitled event'),
-  }
+    title: selectedMatch?.title ?? (draft.event.title || "Untitled event"),
+  };
 }
 
 async function loadReviewContext(accessToken: string, userSub: string) {
   const [calendars, factsContext] = await Promise.all([
     listWritableCalendars(accessToken),
     loadFactsContext(userSub),
-  ])
+  ]);
 
   return {
     calendars,
     factsContext,
     recentEvents: await listRecentEvents(accessToken, calendars),
-  }
+  };
 }

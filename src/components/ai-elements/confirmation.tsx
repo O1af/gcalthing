@@ -2,10 +2,10 @@
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, createSafeContext } from "@/lib/utils";
 import type { ToolUIPart } from "ai";
 import type { ComponentProps, ReactNode } from "react";
-import { createContext, useContext, useMemo } from "react";
+import { useMemo } from "react";
 
 type ToolUIPartApproval =
   | {
@@ -25,19 +25,8 @@ interface ConfirmationContextValue {
   state: ToolUIPart["state"];
 }
 
-const ConfirmationContext = createContext<ConfirmationContextValue | null>(
-  null
-);
-
-const useConfirmation = () => {
-  const context = useContext(ConfirmationContext);
-
-  if (!context) {
-    throw new Error("Confirmation components must be used within Confirmation");
-  }
-
-  return context;
-};
+const [ConfirmationProvider, useConfirmation] =
+  createSafeContext<ConfirmationContextValue>("Confirmation");
 
 export type ConfirmationProps = ComponentProps<typeof Alert> & {
   approval?: ToolUIPartApproval;
@@ -57,9 +46,9 @@ export const Confirmation = ({
   }
 
   return (
-    <ConfirmationContext.Provider value={contextValue}>
+    <ConfirmationProvider value={contextValue}>
       <Alert className={cn("flex flex-col gap-2", className)} {...props} />
-    </ConfirmationContext.Provider>
+    </ConfirmationProvider>
   );
 };
 

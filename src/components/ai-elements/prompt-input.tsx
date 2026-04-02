@@ -69,6 +69,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -95,6 +96,14 @@ const convertBlobUrlToDataUrl = async (url: string): Promise<string | null> => {
   } catch {
     return null;
   }
+};
+
+const openNativeFilePicker = (input: HTMLInputElement | null) => {
+  if (!input) {
+    return;
+  }
+
+  input.click();
 };
 
 const captureScreenshot = async (): Promise<File | null> => {
@@ -184,6 +193,7 @@ export interface AttachmentsContext {
   remove: (id: string) => void;
   clear: () => void;
   openFileDialog: () => void;
+  fileInputId?: string;
   fileInputRef: RefObject<HTMLInputElement | null>;
 }
 
@@ -199,7 +209,8 @@ export interface PromptInputControllerProps {
   /** INTERNAL: Allows PromptInput to register its file textInput + "open" callback */
   __registerFileInput: (
     ref: RefObject<HTMLInputElement | null>,
-    open: () => void
+    open: () => void,
+    id: string
   ) => void;
 }
 
@@ -220,7 +231,6 @@ export const usePromptInputController = () => {
   return ctx;
 };
 
-// Optional variants (do NOT throw). Useful for dual-mode components.
 const useOptionalPromptInputController = () =>
   useContext(PromptInputController);
 
@@ -257,6 +267,9 @@ export const PromptInputProvider = ({
   const [attachmentFiles, setAttachmentFiles] = useState<
     (FileUIPart & { id: string })[]
   >([]);
+  const [fileInputId, setFileInputId] = useState<string | undefined>(
+    undefined
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // oxlint-disable-next-line eslint(no-empty-function)
   const openRef = useRef<() => void>(() => {});
@@ -327,18 +340,20 @@ export const PromptInputProvider = ({
     () => ({
       add,
       clear,
+      fileInputId,
       fileInputRef,
       files: attachmentFiles,
       openFileDialog,
       remove,
     }),
-    [attachmentFiles, add, remove, clear, openFileDialog]
+    [attachmentFiles, add, remove, clear, fileInputId, openFileDialog]
   );
 
   const __registerFileInput = useCallback(
-    (ref: RefObject<HTMLInputElement | null>, open: () => void) => {
+    (ref: RefObject<HTMLInputElement | null>, open: () => void, id: string) => {
       fileInputRef.current = ref.current;
       openRef.current = open;
+      setFileInputId(id);
     },
     []
   );
@@ -531,6 +546,7 @@ export const PromptInput = ({
   // Refs
   const inputRef = useRef<HTMLInputElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const fileInputId = useId();
 
   // ----- Local attachments (only used when no provider)
   const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
@@ -549,7 +565,7 @@ export const PromptInput = ({
   }, [files]);
 
   const openFileDialogLocal = useCallback(() => {
-    inputRef.current?.click();
+    openNativeFilePicker(inputRef.current);
   }, []);
 
   const matchesAccept = useCallback(
@@ -718,8 +734,12 @@ export const PromptInput = ({
     if (!usingProvider) {
       return;
     }
-    controller.__registerFileInput(inputRef, () => inputRef.current?.click());
-  }, [usingProvider, controller]);
+    controller.__registerFileInput(
+      inputRef,
+      () => openNativeFilePicker(inputRef.current),
+      fileInputId
+    );
+  }, [usingProvider, controller, fileInputId]);
 
   // Note: File input cannot be programmatically set for security reasons
   // The syncHiddenInput prop is no longer functional
@@ -815,12 +835,13 @@ export const PromptInput = ({
     () => ({
       add,
       clear: clearAttachments,
+      fileInputId,
       fileInputRef: inputRef,
       files: files.map((item) => ({ ...item, id: item.id })),
       openFileDialog,
       remove,
     }),
-    [files, add, remove, clearAttachments, openFileDialog]
+    [files, add, remove, clearAttachments, fileInputId, openFileDialog]
   );
 
   const refsCtx = useMemo<ReferencedSourcesContext>(
@@ -908,7 +929,8 @@ export const PromptInput = ({
       <input
         accept={accept}
         aria-label="Upload files"
-        className="hidden"
+        className="sr-only"
+        id={fileInputId}
         multiple={multiple}
         onChange={handleChange}
         ref={inputRef}
@@ -1055,6 +1077,7 @@ export const PromptInputTextarea = ({
 
   return (
     <InputGroupTextarea
+      aria-label={placeholder}
       className={cn("field-sizing-content max-h-48 min-h-16", className)}
       name="message"
       onCompositionEnd={handleCompositionEnd}

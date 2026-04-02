@@ -6,7 +6,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
-import { cn } from "@/lib/utils";
+import { cn, createSafeContext } from "@/lib/utils";
 import type { FileUIPart, SourceDocumentUIPart } from "ai";
 import {
   FileTextIcon,
@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
 import { createContext, useCallback, useContext, useMemo } from "react";
+
 
 // ============================================================================
 // Types
@@ -125,7 +126,8 @@ interface AttachmentContextValue {
   variant: AttachmentVariant;
 }
 
-const AttachmentContext = createContext<AttachmentContextValue | null>(null);
+const [AttachmentProvider, useAttachmentContext] =
+  createSafeContext<AttachmentContextValue>("Attachment");
 
 // ============================================================================
 // Hooks
@@ -134,13 +136,7 @@ const AttachmentContext = createContext<AttachmentContextValue | null>(null);
 export const useAttachmentsContext = () =>
   useContext(AttachmentsContext) ?? { variant: "grid" as const };
 
-export const useAttachmentContext = () => {
-  const ctx = useContext(AttachmentContext);
-  if (!ctx) {
-    throw new Error("Attachment components must be used within <Attachment>");
-  }
-  return ctx;
-};
+export { useAttachmentContext };
 
 // ============================================================================
 // Attachments - Container
@@ -200,7 +196,7 @@ export const Attachment = ({
   );
 
   return (
-    <AttachmentContext.Provider value={contextValue}>
+    <AttachmentProvider value={contextValue}>
       <div
         className={cn(
           "group relative",
@@ -221,7 +217,7 @@ export const Attachment = ({
       >
         {children}
       </div>
-    </AttachmentContext.Provider>
+    </AttachmentProvider>
   );
 };
 
@@ -252,7 +248,7 @@ export const AttachmentPreview = ({
     }
 
     if (mediaCategory === "video" && data.type === "file" && data.url) {
-      return <video className="size-full object-cover" muted src={data.url} />;
+      return <video aria-label={data.filename ?? "Video attachment"} className="size-full object-cover" muted src={data.url} />;
     }
 
     const Icon = mediaCategoryIcons[mediaCategory];
@@ -342,13 +338,13 @@ export const AttachmentRemove = ({
         variant === "grid" && [
           "absolute top-2 right-2 size-6 rounded-full p-0",
           "bg-background/80 backdrop-blur-sm",
-          "opacity-0 transition-opacity group-hover:opacity-100",
+          "opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100",
           "hover:bg-background",
           "[&>svg]:size-3",
         ],
         variant === "inline" && [
           "size-5 rounded p-0",
-          "opacity-0 transition-opacity group-hover:opacity-100",
+          "opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100",
           "[&>svg]:size-2.5",
         ],
         variant === "list" && ["size-8 shrink-0 rounded p-0", "[&>svg]:size-4"],

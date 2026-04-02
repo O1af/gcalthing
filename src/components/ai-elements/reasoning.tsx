@@ -6,18 +6,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { cn } from "@/lib/utils";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import { cn, createSafeContext } from "@/lib/utils";
+import { streamdownPlugins } from "@/lib/streamdown-config";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import {
-  createContext,
   memo,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -34,15 +29,9 @@ interface ReasoningContextValue {
   duration: number | undefined;
 }
 
-const ReasoningContext = createContext<ReasoningContextValue | null>(null);
-
-export const useReasoning = () => {
-  const context = useContext(ReasoningContext);
-  if (!context) {
-    throw new Error("Reasoning components must be used within Reasoning");
-  }
-  return context;
-};
+const [ReasoningProvider, useReasoning] =
+  createSafeContext<ReasoningContextValue>("Reasoning");
+export { useReasoning };
 
 export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   isStreaming?: boolean;
@@ -134,7 +123,7 @@ export const Reasoning = memo(
     );
 
     return (
-      <ReasoningContext.Provider value={contextValue}>
+      <ReasoningProvider value={contextValue}>
         <Collapsible
           className={cn("not-prose mb-4", className)}
           onOpenChange={handleOpenChange}
@@ -143,7 +132,7 @@ export const Reasoning = memo(
         >
           {children}
         </Collapsible>
-      </ReasoningContext.Provider>
+      </ReasoningProvider>
     );
   }
 );
@@ -156,7 +145,7 @@ export type ReasoningTriggerProps = ComponentProps<
 
 const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number) => {
   if (isStreaming || duration === 0) {
-    return <Shimmer duration={1}>Thinking...</Shimmer>;
+    return <Shimmer duration={1}>Thinking\u2026</Shimmer>;
   }
   if (duration === undefined) {
     return <p>Thought for a few seconds</p>;
@@ -203,8 +192,6 @@ export type ReasoningContentProps = ComponentProps<
 > & {
   children: string;
 };
-
-const streamdownPlugins = { cjk, code, math, mermaid };
 
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => (

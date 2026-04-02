@@ -17,6 +17,11 @@ import {
   getSelectedAttendees,
 } from '@/lib/contracts'
 import { clamp, normalizeText, similarity } from '@/lib/domain/text'
+import {
+  MATCH_LOOSE,
+  MATCH_VERY_STRICT,
+  SIMILARITY_LOOSE,
+} from '@/lib/server/similarity-thresholds'
 
 interface AttendeeAggregate {
   displayName: string
@@ -187,7 +192,7 @@ export function suggestCalendars(
     .map((calendar) => {
       const recentEvents = events.filter((event) => event.calendarId === calendar.id)
       const titleOverlap = recentEvents.some(
-        (event) => similarity(titleHint, normalizeText(event.summary ?? '')) >= 0.7,
+        (event) => similarity(titleHint, normalizeText(event.summary ?? '')) >= SIMILARITY_LOOSE,
       )
       const attendeeOverlap = recentEvents.some((event) =>
         (event.attendees ?? []).some((attendee) =>
@@ -201,7 +206,7 @@ export function suggestCalendars(
         (fact) =>
           fact.kind === 'calendar-pattern' &&
           fact.value === calendar.id &&
-          similarity(normalizeText(fact.subject), titleHint) >= 0.7,
+          similarity(normalizeText(fact.subject), titleHint) >= SIMILARITY_LOOSE,
       )
       const score = clamp(
         (calendar.primary ? 0.35 : 0.1) +
@@ -244,7 +249,7 @@ export function detectExistingEventMatches(
       const score = similarity(titleHint, normalizeText(event.summary ?? ''))
       const eventStart = getEventStart(event)
       const sameDay = intentDate && eventStart ? eventStart.startsWith(intentDate) : false
-      const similar = score >= 0.72 && (sameDay || score >= 0.88)
+      const similar = score >= MATCH_LOOSE && (sameDay || score >= MATCH_VERY_STRICT)
       if (!similar) {
         return null
       }
