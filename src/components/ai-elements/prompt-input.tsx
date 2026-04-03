@@ -321,9 +321,16 @@ export function PromptInput({
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
 
+      const submittedText = text
+      const submittedFiles = files
+
+      setFiles([])
+      setText('')
+      event.currentTarget.reset()
+
       try {
         const convertedFiles = await Promise.all(
-          files.map(async ({ id: _id, ...file }) => {
+          submittedFiles.map(async ({ id: _id, ...file }) => {
             if (!file.url.startsWith('blob:')) {
               return file
             }
@@ -337,15 +344,14 @@ export function PromptInput({
           }),
         )
 
-        await Promise.resolve(onSubmit({ files: convertedFiles, text }, event))
-        clear()
-        setText('')
-        event.currentTarget.reset()
+        await Promise.resolve(onSubmit({ files: convertedFiles, text: submittedText }, event))
+        revokeFiles(submittedFiles)
       } catch {
-        // Leave the current input intact so the user can retry.
+        setText(submittedText)
+        setFiles(submittedFiles)
       }
     },
-    [clear, files, onSubmit, text],
+    [files, onSubmit, text],
   )
 
   const contextValue = useMemo<PromptInputContextValue>(

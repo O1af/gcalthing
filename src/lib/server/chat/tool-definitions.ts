@@ -111,6 +111,7 @@ export function buildTurnTools(params: {
         executeLoggedTool('search_events', turnId, () =>
           withSession(session, setNotice, 'Sign in with Google to search your calendar events.', async (session) => {
             const { searchGoogleCalendarEvents } = await import('@/lib/server/google-calendar')
+          const resolvedTimeZone = input.localTimeZone
           const calendars = await getCalendars!()
           const events = await searchGoogleCalendarEvents({
             accessToken: session.tokens.accessToken,
@@ -118,8 +119,12 @@ export function buildTurnTools(params: {
             calendars,
             limit,
             query,
-            timeMax: dateTo ? `${dateTo}T23:59:59Z` : undefined,
-            timeMin: dateFrom ? `${dateFrom}T00:00:00Z` : undefined,
+            timeMax: dateTo
+              ? formatRfc3339InTimeZone(dateTo, '23:59', resolvedTimeZone)
+              : undefined,
+            timeMin: dateFrom
+              ? formatRfc3339InTimeZone(dateFrom, '00:00', resolvedTimeZone)
+              : undefined,
           })
 
           return {
