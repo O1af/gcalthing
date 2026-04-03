@@ -19,6 +19,7 @@ import {
   buildReviewBlockers,
   buildSmartSignals,
   detectExistingEventMatches,
+  buildAttendeeDirectory,
   resolveAttendeeGroups,
   suggestCalendars,
   summarizeCalendarContext,
@@ -140,8 +141,9 @@ async function finalizeReviewDraft(params: {
     selectedUpdateTarget,
   } = params;
 
+  const attendeeDirectory = buildAttendeeDirectory(recentEvents);
   const attendeeGroups = mergeAttendeeGroupState(
-    resolveAttendeeGroups(intent, recentEvents, factsContext, previousDraft?.attendeeGroups ?? []),
+    resolveAttendeeGroups(intent, recentEvents, factsContext, previousDraft?.attendeeGroups ?? [], attendeeDirectory),
     previousDraft?.attendeeGroups ?? [],
   );
   const calendarSuggestions = suggestCalendars(
@@ -190,7 +192,7 @@ async function finalizeReviewDraft(params: {
 
   const draft = {
     attendeeGroups,
-    calendarContext: summarizeCalendarContext(calendars, recentEvents),
+    calendarContext: summarizeCalendarContext(calendars, recentEvents, attendeeDirectory),
     calendarSuggestions,
     calendars: calendars.map((c) => ({
       id: c.id,

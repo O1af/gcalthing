@@ -19,6 +19,8 @@ const serverEnvSchema = z.object({
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>
 
+let cached: ServerEnv | null = null
+
 export function getServerEnv(): ServerEnv {
-  return serverEnvSchema.parse(workerEnv)
+  return (cached ??= serverEnvSchema.parse(workerEnv))
 }

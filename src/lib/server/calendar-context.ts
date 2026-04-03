@@ -31,9 +31,35 @@ interface AttendeeAggregate {
   calendarIds: Set<string>
 }
 
+export function buildAttendeeDirectory(events: GoogleCalendarEvent[]) {
+  const directory = new Map<string, AttendeeAggregate>()
+
+  for (const event of events) {
+    for (const attendee of event.attendees ?? []) {
+      if (!attendee.email) {
+        continue
+      }
+
+      const key = attendee.email.toLowerCase()
+      const current = directory.get(key)
+      directory.set(key, {
+        calendarIds: current?.calendarIds ?? new Set<string>(),
+        count: (current?.count ?? 0) + 1,
+        displayName: attendee.displayName || current?.displayName || attendee.email,
+        email: attendee.email,
+        lastSeenAt: maxDate(current?.lastSeenAt, getEventStart(event) ?? new Date(0).toISOString()),
+      })
+      directory.get(key)?.calendarIds.add(event.calendarId)
+    }
+  }
+
+  return directory
+}
+
 export function summarizeCalendarContext(
   calendars: GoogleCalendarListEntry[],
   events: GoogleCalendarEvent[],
+  directory?: Map<string, AttendeeAggregate>,
 ): CalendarContextSummary {
   const titleCounts = new Map<string, number>()
   const locationCounts = new Map<string, number>()
@@ -50,7 +76,7 @@ export function summarizeCalendarContext(
     }
   }
 
-  const attendeeDirectory = buildAttendeeDirectory(events)
+  const attendeeDirectory = directory ?? buildAttendeeDirectory(events)
 
   return calendarContextSummarySchema.parse({
     attendeeDirectory: [...attendeeDirectory.values()]
@@ -85,8 +111,9 @@ export function resolveAttendeeGroups(
   events: GoogleCalendarEvent[],
   factsContext: FactsContext,
   previousGroups: AttendeeResolutionGroup[] = [],
+  directory?: Map<string, AttendeeAggregate>,
 ) {
-  const directory = buildAttendeeDirectory(events)
+  const dir = directory ?? buildAttendeeDirectory(events)
 
   return intent.attendeeMentions.map((mention) => {
     const previousGroup = previousGroups.find(
@@ -105,13 +132,13 @@ export function resolveAttendeeGroups(
           previousGroup?.candidates.find((candidate) => candidate.email === fact.value)
             ?.displayName ?? mention.name,
         email: fact.value,
-        confidence: Math.min(0.94, Math.max(fact.confidence, 0.72)),
+        confidence: clamp(fact.confidence, 0.72, 0.94),
         reasons: ['Matched an active shared fact from prior confirmed event reviews'],
         source: 'shared-fact',
         autoSelected: fact.confidence >= 0.9,
       }))
 
-    const calendarCandidates = [...directory.values()].map<AttendeeCandidate>((candidate) => {
+    const calendarCandidates = [...dir.values()].map<AttendeeCandidate>((candidate) => {
       const exactName = normalizeText(mention.name) === normalizeText(candidate.displayName)
       const firstNameMatch = normalizeText(candidate.displayName)
         .split(' ')[0]
@@ -371,31 +398,6 @@ export function buildConflictCheckResult(
     hasConflict: intervals.length > 0,
     intervals,
   })
-}
-
-function buildAttendeeDirectory(events: GoogleCalendarEvent[]) {
-  const directory = new Map<string, AttendeeAggregate>()
-
-  for (const event of events) {
-    for (const attendee of event.attendees ?? []) {
-      if (!attendee.email) {
-        continue
-      }
-
-      const key = attendee.email.toLowerCase()
-      const current = directory.get(key)
-      directory.set(key, {
-        calendarIds: current?.calendarIds ?? new Set<string>(),
-        count: (current?.count ?? 0) + 1,
-        displayName: attendee.displayName || current?.displayName || attendee.email,
-        email: attendee.email,
-        lastSeenAt: maxDate(current?.lastSeenAt, getEventStart(event) ?? new Date(0).toISOString()),
-      })
-      directory.get(key)?.calendarIds.add(event.calendarId)
-    }
-  }
-
-  return directory
 }
 
 function dedupeAttendeeCandidates(candidates: AttendeeCandidate[]) {

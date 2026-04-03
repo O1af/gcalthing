@@ -82,6 +82,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import type { AppChatMessage } from '@/lib/chat-ui'
+import { cn } from '@/lib/utils'
 import {
   getGoogleCalendarToolLabel,
   getGoogleCalendarToolSummary,
@@ -112,6 +113,8 @@ import {
   Sun,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+
+type WorkspaceChatStatus = ReturnType<typeof useWorkspaceChat>['status']
 
 const EXECUTION_MODE_KEY = 'gcalthing-execution-mode'
 const RESPONSE_RUNWAY_CLASS = 'min-h-[clamp(18rem,40vh,28rem)]'
@@ -322,7 +325,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
               {showResponseRunway ? (
                 <>
                   {messages.slice(0, activeTurnAnchorIndex + 1).map(renderMessageRow)}
-                  <ResponseRunway anchorMessageId={activeTurnAnchorId}>
+                  <ResponseRunway>
                     {messages.slice(activeTurnAnchorIndex + 1).map(renderMessageRow)}
                     {shouldShowPendingAssistantMessage ? (
                       <PendingAssistantMessage />
@@ -356,20 +359,19 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   )
 }
 
-function useExecutionMode(): [ExecutionMode, (nextMode: string) => void] {
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>('approval-first')
+function readStoredExecutionMode(): ExecutionMode {
+  try {
+    const stored = window.localStorage.getItem(EXECUTION_MODE_KEY)
+    const parsed = executionModeSchema.safeParse(stored)
+    if (parsed.success) return parsed.data
+  } catch {
+    // Ignore stale local storage.
+  }
+  return 'approval-first'
+}
 
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(EXECUTION_MODE_KEY)
-      const parsed = executionModeSchema.safeParse(stored)
-      if (parsed.success) {
-        setExecutionMode(parsed.data)
-      }
-    } catch {
-      // Ignore stale local storage.
-    }
-  }, [])
+function useExecutionMode(): [ExecutionMode, (nextMode: string) => void] {
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(readStoredExecutionMode)
 
   useEffect(() => {
     try {
@@ -490,18 +492,14 @@ function PendingAssistantMessage(): React.JSX.Element {
 }
 
 function ResponseRunway(props: {
-  anchorMessageId: string | null
   children: React.ReactNode
 }): React.JSX.Element {
-  const { anchorMessageId, children } = props
-
   return (
     <div
       className={`flex flex-col gap-4 pt-2 ${RESPONSE_RUNWAY_CLASS}`}
-      data-anchor-message-id={anchorMessageId ?? ''}
       data-slot="response-runway"
     >
-      {children}
+      {props.children}
     </div>
   )
 }
@@ -717,16 +715,7 @@ function NavUser(props: {
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <Avatar className="h-8 w-8 rounded-lg">
-                <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
-                <AvatarFallback className="rounded-lg text-xs">
-                  {viewer.name
-                    .split(' ')
-                    .map((part) => part[0])
-                    .join('')
-                    .slice(0, 2)}
-                </AvatarFallback>
-              </Avatar>
+              <ViewerAvatar viewer={viewer} />
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{viewer.name}</span>
                 <span className="truncate text-xs">{viewer.email}</span>
@@ -742,16 +731,7 @@ function NavUser(props: {
           >
             <DropdownMenuLabel className="p-0 font-normal">
               <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <Avatar className="h-8 w-8 rounded-lg">
-                  <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
-                  <AvatarFallback className="rounded-lg text-xs">
-                    {viewer.name
-                      .split(' ')
-                      .map((part) => part[0])
-                      .join('')
-                      .slice(0, 2)}
-                  </AvatarFallback>
-                </Avatar>
+                <ViewerAvatar viewer={viewer} />
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-medium">{viewer.name}</span>
                   <span className="truncate text-xs">{viewer.email}</span>
@@ -777,6 +757,21 @@ function NavUser(props: {
   )
 }
 
+function ViewerAvatar({ viewer, className }: { viewer: { name: string; picture: string | null }; className?: string }) {
+  const initials = viewer.name
+    .split(' ')
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+
+  return (
+    <Avatar className={cn('h-8 w-8 rounded-lg', className)}>
+      <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
+      <AvatarFallback className="rounded-lg text-xs">{initials}</AvatarFallback>
+    </Avatar>
+  )
+}
+
 function getExecutionModeLabel(executionMode: ExecutionMode): string {
   if (executionMode === 'direct-execution') {
     return 'Direct execution'
@@ -787,19 +782,18 @@ function getExecutionModeLabel(executionMode: ExecutionMode): string {
 
 type Theme = 'light' | 'dark' | 'auto'
 
-function useTheme(): [Theme, (next: Theme) => void] {
-  const [theme, setThemeState] = useState<Theme>('auto')
+function readStoredTheme(): Theme {
+  try {
+    const stored = window.localStorage.getItem('theme')
+    if (stored === 'light' || stored === 'dark' || stored === 'auto') return stored
+  } catch {
+    // ignore
+  }
+  return 'auto'
+}
 
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem('theme')
-      if (stored === 'light' || stored === 'dark' || stored === 'auto') {
-        setThemeState(stored)
-      }
-    } catch {
-      // ignore
-    }
-  }, [])
+function useTheme(): [Theme, (next: Theme) => void] {
+  const [theme, setThemeState] = useState<Theme>(readStoredTheme)
 
   const setTheme = useCallback((next: Theme) => {
     setThemeState(next)
@@ -895,16 +889,7 @@ function SettingsDialog(props: {
             <div className="space-y-2">
               <Label>Account</Label>
               <div className="flex items-center gap-3 rounded-lg border p-3">
-                <Avatar className="size-8">
-                  <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
-                  <AvatarFallback className="text-xs">
-                    {viewer.name
-                      .split(' ')
-                      .map((part) => part[0])
-                      .join('')
-                      .slice(0, 2)}
-                  </AvatarFallback>
-                </Avatar>
+                <ViewerAvatar viewer={viewer} className="size-8 rounded-md" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{viewer.name}</p>
                   <p className="truncate text-xs text-muted-foreground">{viewer.email}</p>
@@ -978,7 +963,7 @@ function ChatAttachments(props: {
 function EmptyWorkspaceState(props: {
   onPromptSubmit: (message: PromptInputMessage) => Promise<void>
   onSuggestionClick: (text: string) => void
-  status: ReturnType<typeof useWorkspaceChat>['status']
+  status: WorkspaceChatStatus
   stop: () => void
   viewer: WorkspaceShellProps['viewer']
 }): React.JSX.Element {
@@ -988,11 +973,9 @@ function EmptyWorkspaceState(props: {
     <div className="relative flex w-full flex-col items-center gap-6 px-4 text-center">
       <div className="pointer-events-none absolute inset-x-16 top-0 -z-10 h-40 rounded-full bg-[radial-gradient(circle_at_center,rgba(39,110,241,0.14),transparent_70%)] blur-2xl" />
 
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-          What are you working on?
-        </h1>
-      </div>
+      <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+        What are you working on?
+      </h1>
 
       <WorkspaceComposer
         onSubmit={onPromptSubmit}
@@ -1025,7 +1008,7 @@ function EmptyWorkspaceState(props: {
 
 function WorkspaceComposer(props: {
   onSubmit: (message: PromptInputMessage) => Promise<void>
-  status: ReturnType<typeof useWorkspaceChat>['status']
+  status: WorkspaceChatStatus
   stop: () => void
   variant: 'center' | 'dock'
 }): React.JSX.Element {

@@ -43,16 +43,23 @@ export async function decryptJson<T>(secret: string, payload: string): Promise<T
   return JSON.parse(decoder.decode(decrypted)) as T
 }
 
-async function deriveAesKey(secret: string) {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(secret))
+const keyCache = new Map<string, CryptoKey>()
 
-  return crypto.subtle.importKey(
+async function deriveAesKey(secret: string) {
+  const cached = keyCache.get(secret)
+  if (cached) return cached
+
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(secret))
+  const key = await crypto.subtle.importKey(
     'raw',
     digest,
     { name: 'AES-GCM' },
     false,
     ['encrypt', 'decrypt'],
   )
+
+  keyCache.set(secret, key)
+  return key
 }
 
 function base64UrlEncode(value: Uint8Array) {

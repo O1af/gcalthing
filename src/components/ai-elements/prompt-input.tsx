@@ -7,7 +7,7 @@ import {
   InputGroupTextarea,
 } from '@/components/ui/input-group'
 import { Spinner } from '@/components/ui/spinner'
-import { cn } from '@/lib/utils'
+import { cn, createSafeContext } from '@/lib/utils'
 import type { ChatStatus, FileUIPart } from 'ai'
 import { nanoid } from 'nanoid'
 import { CornerDownLeftIcon, SquareIcon, XIcon } from 'lucide-react'
@@ -21,9 +21,7 @@ import type {
   MouseEvent,
 } from 'react'
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useId,
   useMemo,
@@ -49,16 +47,7 @@ interface PromptInputContextValue {
   text: string
 }
 
-const PromptInputContext = createContext<PromptInputContextValue | null>(null)
-
-function usePromptInputContext() {
-  const context = useContext(PromptInputContext)
-  if (!context) {
-    throw new Error('PromptInput components must be used within PromptInput')
-  }
-
-  return context
-}
+const [PromptInputProvider, usePromptInputContext] = createSafeContext<PromptInputContextValue>('PromptInput')
 
 function revokeFiles(files: AttachmentFile[]) {
   for (const file of files) {
@@ -155,18 +144,16 @@ export function PromptInput({
 }: PromptInputProps) {
   const [text, setText] = useState('')
   const [files, setFiles] = useState<AttachmentFile[]>([])
-  const filesRef = useRef(files)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const formRef = useRef<HTMLFormElement | null>(null)
   const fileInputId = useId()
 
-  useEffect(() => {
-    filesRef.current = files
-  }, [files])
-
   useEffect(
     () => () => {
-      revokeFiles(filesRef.current)
+      setFiles((current) => {
+        revokeFiles(current)
+        return []
+      })
     },
     [],
   )
@@ -257,63 +244,31 @@ export function PromptInput({
   )
 
   useEffect(() => {
-    const form = formRef.current
-    if (!form || globalDrop) {
-      return
-    }
+    const target = globalDrop ? document : formRef.current
+    if (!target) return
 
-    const handleDragOver = (event: DragEvent) => {
-      if (event.dataTransfer?.types?.includes('Files')) {
+    const handleDragOver = (event: Event) => {
+      if ((event as DragEvent).dataTransfer?.types?.includes('Files')) {
         event.preventDefault()
       }
     }
 
-    const handleDrop = (event: DragEvent) => {
-      if (event.dataTransfer?.types?.includes('Files')) {
+    const handleDrop = (event: Event) => {
+      const dragEvent = event as DragEvent
+      if (dragEvent.dataTransfer?.types?.includes('Files')) {
         event.preventDefault()
       }
-
-      if (event.dataTransfer?.files?.length) {
-        add(event.dataTransfer.files)
+      if (dragEvent.dataTransfer?.files?.length) {
+        add(dragEvent.dataTransfer.files)
       }
     }
 
-    form.addEventListener('dragover', handleDragOver)
-    form.addEventListener('drop', handleDrop)
+    target.addEventListener('dragover', handleDragOver)
+    target.addEventListener('drop', handleDrop)
 
     return () => {
-      form.removeEventListener('dragover', handleDragOver)
-      form.removeEventListener('drop', handleDrop)
-    }
-  }, [add, globalDrop])
-
-  useEffect(() => {
-    if (!globalDrop) {
-      return
-    }
-
-    const handleDragOver = (event: DragEvent) => {
-      if (event.dataTransfer?.types?.includes('Files')) {
-        event.preventDefault()
-      }
-    }
-
-    const handleDrop = (event: DragEvent) => {
-      if (event.dataTransfer?.types?.includes('Files')) {
-        event.preventDefault()
-      }
-
-      if (event.dataTransfer?.files?.length) {
-        add(event.dataTransfer.files)
-      }
-    }
-
-    document.addEventListener('dragover', handleDragOver)
-    document.addEventListener('drop', handleDrop)
-
-    return () => {
-      document.removeEventListener('dragover', handleDragOver)
-      document.removeEventListener('drop', handleDrop)
+      target.removeEventListener('dragover', handleDragOver)
+      target.removeEventListener('drop', handleDrop)
     }
   }, [add, globalDrop])
 
@@ -372,7 +327,7 @@ export function PromptInput({
   )
 
   return (
-    <PromptInputContext.Provider value={contextValue}>
+    <PromptInputProvider value={contextValue}>
       <input
         accept={accept}
         aria-label="Upload files"
@@ -392,7 +347,7 @@ export function PromptInput({
       >
         <InputGroup className="overflow-hidden">{children}</InputGroup>
       </form>
-    </PromptInputContext.Provider>
+    </PromptInputProvider>
   )
 }
 

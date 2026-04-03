@@ -162,7 +162,6 @@ describe('WorkspaceShell', () => {
     })
 
     const runway = container.querySelector('[data-slot="response-runway"]')
-    expect(runway?.getAttribute('data-anchor-message-id')).toBe('user-1')
     expect(runway?.className).toContain('min-h-[clamp(18rem,40vh,28rem)]')
     expect(HTMLElement.prototype.scrollTo).toHaveBeenCalled()
   })
@@ -201,10 +200,8 @@ describe('WorkspaceShell', () => {
 
     await waitFor(() => {
       expect(
-        container
-          .querySelector('[data-slot="response-runway"]')
-          ?.getAttribute('data-anchor-message-id'),
-      ).toBe('user-3')
+        container.querySelector('[data-slot="response-runway"]'),
+      ).toBeTruthy()
     })
   })
 })
