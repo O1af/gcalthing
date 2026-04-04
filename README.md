@@ -2,7 +2,7 @@
 
 A single-page chat workspace where an AI assistant helps you **read and manage Google Calendar**—search events, check availability, and create or change meetings—with optional **approval-first** mode so writes wait for your OK.
 
-Built with [TanStack Start](https://tanstack.com/start) (React 19, file routes), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/) v4, and deployed on **Cloudflare Workers** with session state in **KV**. Calendar access uses **Google OAuth**; reasoning and tools run through the **Vercel AI SDK** and **OpenAI**.
+Built with [TanStack Start](https://tanstack.com/start) (React 19, file routes), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/) v4, and deployed on **Cloudflare Workers** with session state in **KV**. Calendar access uses **Google OAuth**; reasoning and tools run through the **Vercel AI SDK**, **OpenAI**, and **Cloudflare AI Gateway**.
 
 ---
 
@@ -41,12 +41,15 @@ Runtime env is validated in `src/lib/server/env.ts` (Cloudflare Workers bindings
 | `GOOGLE_REDIRECT_URI`                       | OAuth redirect URL (must match Google console) |
 | `SESSION_SECRET`                            | Session signing (≥16 chars)                    |
 | `TOKEN_ENCRYPTION_SECRET`                   | Token encryption (≥16 chars)                   |
+| `CF_AIG_ACCOUNT_ID`                         | Cloudflare account id for AI Gateway           |
+| `CF_AIG_GATEWAY`                            | AI Gateway name                                |
+| `CF_AIG_TOKEN`                              | AI Gateway token                               |
 | `OPENAI_API_KEY`                            | OpenAI API key                                 |
 | `OPENAI_MODEL`                              | Model id (default `gpt-5-mini`)                |
 | `APP_URL`                                   | Public app URL                                 |
 | `AI_DEBUG`                                  | Optional `0` or `1`                            |
 
-KV bindings are declared in `wrangler.jsonc`. Use `wrangler secret` / dashboard vars for production secrets.
+KV bindings are declared in `wrangler.jsonc`. Use `wrangler secret` / dashboard vars for production secrets. The app routes OpenAI model calls through Cloudflare AI Gateway before they reach the upstream provider.
 
 ---
 

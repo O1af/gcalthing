@@ -16,7 +16,10 @@ import {
   Attachments,
 } from '@/components/ai-elements/attachments'
 import {
+  ConversationBody,
   ConversationEmptyState,
+  ConversationRoot,
+  ConversationScrollButton,
 } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import {
@@ -85,9 +88,10 @@ import type { AppChatMessage } from '@/lib/chat-ui'
 import { cn } from '@/lib/utils'
 import {
   getGoogleCalendarToolLabel,
+  getGoogleCalendarSignInDetail,
   getGoogleCalendarToolSummary,
+  getGoogleCalendarWriteSuccess,
   getMessageFiles,
-  getMessageNotice,
   getMessageReasoningText,
   getMessageGoogleCalendarToolParts,
   getMessageText,
@@ -95,7 +99,7 @@ import {
   type GoogleCalendarToolUIPart,
 } from '@/lib/chat-ui'
 import {
-  chatNoticeSchema, executionModeSchema, type ExecutionMode
+  executionModeSchema, type ExecutionMode
 } from '@/lib/contracts'
 import {
   CalendarDays,
@@ -112,13 +116,12 @@ import {
   SquarePen,
   Sun,
 } from 'lucide-react'
+import { useStickToBottom } from 'use-stick-to-bottom'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 type WorkspaceChatStatus = ReturnType<typeof useWorkspaceChat>['status']
 
 const EXECUTION_MODE_KEY = 'gcalthing-execution-mode'
-const RESPONSE_RUNWAY_CLASS = 'min-h-[clamp(18rem,40vh,28rem)]'
-
 interface WorkspaceShellProps {
   viewer: {
     email: string
@@ -130,16 +133,16 @@ interface WorkspaceShellProps {
 
 export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   const [executionMode, setExecutionMode] = useExecutionMode()
-  const { messages, sendMessage, setMessages, status, stop } =
+  const { addToolApprovalResponse, messages, sendMessage, setMessages, status, stop } =
     useWorkspaceChat(executionMode)
   const [openChainMessageId, setOpenChainMessageId] = useState<string | null>(null)
-  const [activeTurnAnchorId, setActiveTurnAnchorId] = useState<string | null>(null)
   const [manuallyClosedChainMessageIds, setManuallyClosedChainMessageIds] = useState<
     Record<string, true>
   >({})
-  const mainScrollRef = useRef<HTMLDivElement | null>(null)
-  const messageElementRefs = useRef(new Map<string, HTMLDivElement>())
-  const alignedUserMessageIdRef = useRef<string | null>(null)
+  const conversation = useStickToBottom({
+    initial: 'smooth',
+    resize: 'smooth',
+  })
 
   const isResponding = status === 'submitted' || status === 'streaming'
   const lastMessage = messages.at(-1)
@@ -147,10 +150,8 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   const handleClearChat = useCallback(() => {
     stop()
     setMessages([])
-    setActiveTurnAnchorId(null)
     setOpenChainMessageId(null)
     setManuallyClosedChainMessageIds({})
-    alignedUserMessageIdRef.current = null
   }, [stop, setMessages])
 
   const handlePromptSubmit = useCallback(async (message: PromptInputMessage) => {
@@ -158,15 +159,17 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
       return
     }
 
+    void Promise.resolve(conversation.scrollToBottom('smooth'))
     await sendMessage({
       files: message.files,
       text: message.text,
     })
-  }, [sendMessage])
+  }, [conversation, sendMessage])
 
   const handleSuggestionClick = useCallback((text: string) => {
+    void Promise.resolve(conversation.scrollToBottom('smooth'))
     void sendMessage({ files: [], text })
-  }, [sendMessage])
+  }, [conversation, sendMessage])
 
   const handleToolChainOpenChange = useCallback((messageId: string, open: boolean) => {
     if (open) {
@@ -191,80 +194,28 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   }, [])
 
   useEffect(() => {
-    if (!isResponding) {
-      setActiveTurnAnchorId(null)
-      return
-    }
-
-    if (lastMessage?.role === 'user') {
-      setActiveTurnAnchorId(lastMessage.id)
-      setOpenChainMessageId(null)
-      return
-    }
-
     if (
+      isResponding &&
       lastMessage?.role === 'assistant' &&
       !manuallyClosedChainMessageIds[lastMessage.id]
     ) {
       setOpenChainMessageId(lastMessage.id)
+      return
+    }
+
+    if (isResponding && lastMessage?.role === 'user') {
+      setOpenChainMessageId(null)
     }
   }, [isResponding, lastMessage, manuallyClosedChainMessageIds])
 
-  const setMessageElement = useCallback((messageId: string, element: HTMLDivElement | null) => {
-    if (element) {
-      messageElementRefs.current.set(messageId, element)
-      return
-    }
-
-    messageElementRefs.current.delete(messageId)
-  }, [])
-
-  useEffect(() => {
-    if (
-      !isResponding ||
-      lastMessage?.role !== 'user' ||
-      alignedUserMessageIdRef.current === lastMessage.id
-    ) {
-      return
-    }
-
-    const page = mainScrollRef.current
-    const messageElement = messageElementRefs.current.get(lastMessage.id)
-    if (!page || !messageElement) {
-      return
-    }
-
-    alignedUserMessageIdRef.current = lastMessage.id
-
-    const pageRect = page.getBoundingClientRect()
-    const messageRect = messageElement.getBoundingClientRect()
-    const topOffset = 32
-    const nextTop =
-      page.scrollTop + (messageRect.top - pageRect.top) - topOffset
-
-    page.scrollTo({
-      behavior: 'smooth',
-      top: Math.max(0, nextTop),
-    })
-  }, [isResponding, lastMessage])
-
   const hasContent = messages.length > 0
-  const activeTurnAnchorIndex =
-    activeTurnAnchorId == null
-      ? -1
-      : messages.findIndex((message) => message.id === activeTurnAnchorId)
-  const showResponseRunway = isResponding && activeTurnAnchorIndex >= 0
   const shouldShowPendingAssistantMessage =
     isResponding && lastMessage?.role !== 'assistant'
 
   const renderMessageRow = useCallback((message: AppChatMessage, index: number) => (
-    <div
-      data-message-id={message.id}
-      data-slot="chat-message-row"
-      key={message.id}
-      ref={(element) => setMessageElement(message.id, element)}
-    >
+    <div data-message-id={message.id} data-slot="chat-message-row" key={message.id}>
       <ChatMessageRow
+        addToolApprovalResponse={addToolApprovalResponse}
         isChainOpen={openChainMessageId === message.id}
         isResponding={isResponding}
         message={message}
@@ -272,7 +223,13 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
         showStreamingIndicator={index === messages.length - 1}
       />
     </div>
-  ), [handleToolChainOpenChange, isResponding, messages.length, openChainMessageId, setMessageElement])
+  ), [
+    addToolApprovalResponse,
+    handleToolChainOpenChange,
+    isResponding,
+    messages.length,
+    openChainMessageId,
+  ])
 
   return (
     <SidebarProvider
@@ -293,7 +250,11 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
       </Sidebar>
 
       <SidebarInset>
-        <div ref={mainScrollRef} className="relative flex h-dvh flex-col overflow-y-auto" data-slot="workspace-main-scroll">
+        <div
+          ref={conversation.scrollRef}
+          className="relative flex h-dvh flex-col overflow-y-auto"
+          data-slot="workspace-main-scroll"
+        >
           <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <SidebarTrigger className="size-8 rounded-lg md:hidden" />
             <TopAuthControl
@@ -303,8 +264,11 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
             />
           </header>
 
-          <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 pb-4 sm:px-6">
-            <div className={`flex flex-1 flex-col gap-4 ${hasContent ? 'py-6' : 'justify-center py-10'}`}>
+          <main
+            ref={conversation.contentRef}
+            className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 pb-4 sm:px-6"
+          >
+            <ConversationRoot className="flex-1" instance={conversation}>
               {messages.length === 0 ? (
                 <ConversationEmptyState
                   className="overflow-visible"
@@ -320,38 +284,29 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
                     viewer={viewer}
                   />
                 </ConversationEmptyState>
-              ) : null}
-
-              {showResponseRunway ? (
+              ) : (
                 <>
-                  {messages.slice(0, activeTurnAnchorIndex + 1).map(renderMessageRow)}
-                  <ResponseRunway>
-                    {messages.slice(activeTurnAnchorIndex + 1).map(renderMessageRow)}
+                  <ConversationBody className="flex-1 py-6 pb-28">
+                    {messages.map(renderMessageRow)}
                     {shouldShowPendingAssistantMessage ? (
                       <PendingAssistantMessage />
                     ) : null}
-                  </ResponseRunway>
-                </>
-              ) : (
-                <>
-                  {messages.map(renderMessageRow)}
-                  {shouldShowPendingAssistantMessage ? (
-                    <PendingAssistantMessage />
-                  ) : null}
+                  </ConversationBody>
+                  <ConversationScrollButton containerClassName="bottom-24 z-20" />
                 </>
               )}
-            </div>
 
-            {hasContent ? (
-              <div className="sticky bottom-0 shrink-0 bg-background/92 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-                <WorkspaceComposer
-                  onSubmit={handlePromptSubmit}
-                  status={status}
-                  stop={stop}
-                  variant="dock"
-                />
-              </div>
-            ) : null}
+              {hasContent ? (
+                <div className="sticky bottom-0 shrink-0 bg-background/92 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                  <WorkspaceComposer
+                    onSubmit={handlePromptSubmit}
+                    status={status}
+                    stop={stop}
+                    variant="dock"
+                  />
+                </div>
+              ) : null}
+            </ConversationRoot>
           </main>
         </div>
       </SidebarInset>
@@ -414,27 +369,42 @@ function useWorkspaceChat(executionMode: ExecutionMode) {
   }
 
   return useChat<AppChatMessage>({
-    dataPartSchemas: {
-      chatNotice: chatNoticeSchema,
-    },
     id: 'workspace-chat',
     transport: transportRef.current,
   })
 }
 
 function ChatMessageRow(props: {
+  addToolApprovalResponse: (response: {
+    approved: boolean
+    id: string
+  }) => void | PromiseLike<void>
   isChainOpen: boolean
   isResponding: boolean
   message: AppChatMessage
   onToolChainOpenChange: (messageId: string, open: boolean) => void
   showStreamingIndicator: boolean
 }): React.JSX.Element {
-  const { isChainOpen, isResponding, message, onToolChainOpenChange, showStreamingIndicator } = props
-  const notice = getMessageNotice(message)
+  const {
+    addToolApprovalResponse,
+    isChainOpen,
+    isResponding,
+    message,
+    onToolChainOpenChange,
+    showStreamingIndicator,
+  } = props
   const messageFiles = getMessageFiles(message)
   const messageReasoning = getMessageReasoningText(message)
   const messageText = getMessageText(message)
   const toolParts = getMessageGoogleCalendarToolParts(message)
+  let signInDetail: string | null = null
+  let successResult: ReturnType<typeof getGoogleCalendarWriteSuccess> = null
+  const approvalRequestedParts: Extract<GoogleCalendarToolUIPart, { state: 'approval-requested' }>[] = []
+  for (const part of toolParts) {
+    signInDetail ??= getGoogleCalendarSignInDetail(part)
+    successResult ??= getGoogleCalendarWriteSuccess(part)
+    if (part.state === 'approval-requested') approvalRequestedParts.push(part)
+  }
 
   if (message.role === 'user') {
     return (
@@ -473,10 +443,20 @@ function ChatMessageRow(props: {
         </Reasoning>
       ) : null}
       {messageText ? <MessageResponse className="text-sm">{messageText}</MessageResponse> : null}
-      {notice?.kind === 'event-success' ? <EventSuccessCard notice={notice} /> : null}
-      {notice?.kind === 'sign-in-required' ? (
-        <SignInRequiredCard notice={notice} />
-      ) : null}
+      {approvalRequestedParts.map((toolPart) => (
+        <ToolApprovalCard
+          key={toolPart.toolCallId}
+          onRespond={(approved) =>
+            addToolApprovalResponse({
+              approved,
+              id: toolPart.approval.id,
+            })
+          }
+          toolPart={toolPart}
+        />
+      ))}
+      {successResult ? <EventSuccessCard result={successResult} /> : null}
+      {signInDetail ? <SignInRequiredCard detail={signInDetail} /> : null}
     </div>
   )
 }
@@ -487,19 +467,6 @@ function PendingAssistantMessage(): React.JSX.Element {
       <Reasoning isStreaming>
         <ReasoningTrigger />
       </Reasoning>
-    </div>
-  )
-}
-
-function ResponseRunway(props: {
-  children: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <div
-      className={`flex flex-col gap-4 pt-2 ${RESPONSE_RUNWAY_CLASS}`}
-      data-slot="response-runway"
-    >
-      {props.children}
     </div>
   )
 }
@@ -561,6 +528,48 @@ function getToolStepStatus(
   }
 
   return 'complete'
+}
+
+function ToolApprovalCard(props: {
+  onRespond: (approved: boolean) => void | PromiseLike<void>
+  toolPart: Extract<GoogleCalendarToolUIPart, { state: 'approval-requested' }>
+}): React.JSX.Element {
+  const { onRespond, toolPart } = props
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const handleResponse = useCallback(
+    async (approved: boolean) => {
+      setIsSubmitting(true)
+      try {
+        await onRespond(approved)
+      } finally {
+        setIsSubmitting(false)
+      }
+    },
+    [onRespond],
+  )
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3">
+      <p className="text-sm font-medium">Approval required</p>
+      <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+        {getGoogleCalendarToolLabel(toolPart)}
+      </p>
+      <div className="mt-3 flex gap-2">
+        <Button disabled={isSubmitting} onClick={() => void handleResponse(true)} size="sm">
+          Approve
+        </Button>
+        <Button
+          disabled={isSubmitting}
+          onClick={() => void handleResponse(false)}
+          size="sm"
+          variant="outline"
+        >
+          Deny
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 

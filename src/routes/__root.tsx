@@ -1,5 +1,6 @@
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import { HeadContent, Link, Scripts, createRootRoute } from '@tanstack/react-router'
 import { lazy, Suspense } from 'react'
+import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
 
@@ -60,6 +61,7 @@ export const Route = createRootRoute({
       },
     ],
   }),
+  notFoundComponent: RootNotFound,
   shellComponent: RootDocument,
 })
 
@@ -99,5 +101,28 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         </TooltipProvider>
       </body>
     </html>
+  )
+}
+
+function RootNotFound() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-[var(--background)] px-6 py-16 text-[var(--foreground)]">
+      <div className="w-full max-w-md rounded-3xl border border-[var(--border)] bg-[var(--panel-strong)] p-8 shadow-[var(--shadow-panel)]">
+        <p className="text-sm font-medium uppercase tracking-[0.24em] text-[var(--muted-foreground)]">
+          404
+        </p>
+        <h1 className="mt-4 font-display text-4xl leading-none">
+          Page not found
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-[var(--muted-foreground)]">
+          The route you requested does not exist in this workspace.
+        </p>
+        <div className="mt-6">
+          <Button asChild>
+            <Link to="/">Return home</Link>
+          </Button>
+        </div>
+      </div>
+    </main>
   )
 }

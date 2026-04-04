@@ -1,18 +1,18 @@
 import { z } from 'zod'
 import type { AppChatMessage } from '@/lib/chat-ui'
-import { getMessageText, toSourceInputsFromMessage } from '@/lib/chat-ui'
+import { toSourceInputsFromMessage } from '@/lib/chat-ui'
 import type {
-  ChatNotice,
+  CalendarToolSignInRequired,
   DraftIntent,
-  ExecutionMode,
   SourceInput,
   SubmitEventRequest,
   SubmitEventResponse,
+  WriteCalendarToolSuccess,
 } from '@/lib/contracts'
 import { draftIntentSchema } from '@/lib/contracts'
 import { getDurationMinutes } from '@/lib/domain/date-time'
 import { logDebug, withDebugTiming } from '@/lib/server/debug'
-import type { AssistantTurnInput, SessionContext } from './index'
+import type { SessionContext } from './index'
 import type { eventInputSchema } from './tool-definitions'
 
 export function collectConversationSourceInputs(messages: AppChatMessage[]) {
@@ -137,124 +137,83 @@ export async function normalizeUpdateRequest(params: {
 export async function submitWriteRequest(params: {
   request: SubmitEventRequest
   session: NonNullable<SessionContext>
-  setNotice: (notice: ChatNotice | null) => void
 }) {
-  const { request, session, setNotice } = params
+  const { request, session } = params
   const response = await writeCalendarEvent(session, request)
-  setNotice({
-    kind: 'event-success',
-    response,
-  })
 
   return {
+    ...response,
     detail:
       response.actionPerformed === 'created'
         ? 'Created the event in Google Calendar.'
         : response.actionPerformed === 'updated'
           ? 'Updated the existing Google Calendar event.'
           : 'Deleted the Google Calendar event.',
-  }
+    status: 'ok',
+  } satisfies WriteCalendarToolSuccess
 }
 
 export async function executeUpdateOrReschedule(
   toolName: string,
-  action: 'update' | 'reschedule',
   params: {
     calendarId: string
     eventId: string
     eventInput: z.infer<typeof eventInputSchema>
-    executionMode: ExecutionMode
-    input: AssistantTurnInput
     session: SessionContext | null
-    setNotice: (notice: ChatNotice | null) => void
+    localTimeZone: string
+    sourceInputs: SourceInput[]
     turnId: string
   },
 ) {
-  const { calendarId, eventId, eventInput, executionMode, input, session, setNotice, turnId } = params
+  const { calendarId, eventId, eventInput, localTimeZone, session, sourceInputs, turnId } =
+    params
   return executeLoggedTool(toolName, turnId, () =>
-    withSession(session, setNotice, `Sign in with Google before ${action === 'reschedule' ? 'rescheduling' : 'updating'} events.`, async (session) => {
-      const normalized = await normalizeUpdateRequest({
-      accessToken: session.tokens.accessToken,
-      calendarId,
-      eventId,
-      eventInput,
-      localTimeZone: input.localTimeZone,
-      sourceInputs: input.sourceInputs,
-      userSub: session.profile.sub,
-    })
-    if (normalized.request == null) {
-      return { detail: normalized.detail }
-    }
-
-    const approvalBlock = ensureApprovalAllowed({
-      action,
-      executionMode,
-      latestUserText: input.latestUserText,
-      messages: input.messages,
-      summary: normalized.summary,
-    })
-    if (approvalBlock) {
-      return { detail: approvalBlock }
-    }
-
-    return submitWriteRequest({
-      request: normalized.request,
+    withSession(
       session,
-      setNotice,
-    })
-    }))
+      `Sign in with Google before ${toolName === 'reschedule_event' ? 'rescheduling' : 'updating'} events.`,
+      async (session) => {
+      const normalized = await normalizeUpdateRequest({
+        accessToken: session.tokens.accessToken,
+        calendarId,
+        eventId,
+        eventInput,
+        localTimeZone,
+        sourceInputs,
+        userSub: session.profile.sub,
+      })
+      if (normalized.request == null) {
+        return {
+          detail:
+            normalized.detail ?? 'More detail is needed before writing to Google Calendar.',
+          status: 'needs-input' as const,
+        }
+      }
+
+      return submitWriteRequest({
+        request: normalized.request,
+        session,
+      })
+    },
+    ),
+  )
 }
 
-export function ensureApprovalAllowed(params: {
-  action: 'create' | 'delete' | 'reschedule' | 'update'
-  executionMode: ExecutionMode
-  latestUserText: string
-  messages: AppChatMessage[]
-  summary: string
-}) {
-  const { action, executionMode, latestUserText, messages, summary } = params
-  if (executionMode !== 'approval-first') {
-    return null
-  }
-
-  const previousAssistantText = getPreviousAssistantText(messages)
-  const approved =
-    isApprovalReply(latestUserText) &&
-    previousAssistantText &&
-    assistantAskedForConfirmation(previousAssistantText, action, summary)
-
-  return approved
-    ? null
-    : `Approval-first mode is enabled. Ask the user to confirm this action in chat before writing: ${summary}`
-}
-
-export function signInRequiredResult(
-  setNotice: (notice: ChatNotice | null) => void,
-  detail: string,
-) {
-  setNotice({
-    kind: 'sign-in-required',
+export function signInRequiredResult(detail: string): CalendarToolSignInRequired {
+  return {
     detail,
-  })
-
-  return { detail }
+    status: 'sign-in-required',
+  }
 }
 
 export async function withSession<T>(
   session: SessionContext | null,
-  setNotice: (notice: ChatNotice | null) => void,
   signInMessage: string,
   fn: (session: NonNullable<SessionContext>) => Promise<T>,
-): Promise<T | { detail: string }> {
+): Promise<T | CalendarToolSignInRequired> {
   if (!session) {
-    return signInRequiredResult(setNotice, signInMessage)
+    return signInRequiredResult(signInMessage)
   }
   return fn(session)
-}
-
-export function summarizeDeleteAction(params: { title: string; when: string | null }) {
-  const { title, when } = params
-  return `Delete "${title}"${when ? ` scheduled ${when}` : ''}.`
 }
 
 export async function executeLoggedTool<T>(
@@ -280,64 +239,6 @@ export async function executeLoggedTool<T>(
   })
 }
 
-function assistantAskedForConfirmation(
-  text: string,
-  action: 'create' | 'delete' | 'reschedule' | 'update',
-  summary: string,
-) {
-  const normalized = text.toLowerCase()
-  const asksConfirmation =
-    normalized.includes('confirm') ||
-    normalized.includes('reply yes') ||
-    normalized.includes('should i') ||
-    normalized.includes('want me to')
-  if (!asksConfirmation) {
-    return false
-  }
-
-  const actionKeywords: Record<typeof action, string[]> = {
-    create: ['create', 'add', 'schedule'],
-    delete: ['delete', 'remove', 'cancel'],
-    reschedule: ['reschedule', 'move', 'change the time'],
-    update: ['update', 'edit', 'change'],
-  }
-  const mentionsAction = actionKeywords[action].some((keyword) => normalized.includes(keyword))
-  if (!mentionsAction) {
-    return false
-  }
-
-  const summaryTitle = extractSummaryTitle(summary)
-  return summaryTitle ? normalized.includes(summaryTitle) : true
-}
-
-function extractSummaryTitle(summary: string) {
-  const match = summary.toLowerCase().match(/"([^"]+)"/)
-  return match?.[1] ?? null
-}
-
-function isApprovalReply(text: string) {
-  return /^(yes|yep|yeah|sure|ok|okay|looks good|do it|go ahead|confirm|please do|sounds good)$/i.test(
-    text.trim(),
-  )
-}
-
-function getPreviousAssistantText(messages: AppChatMessage[]) {
-  let seenLatestUser = false
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (!seenLatestUser && message.role === 'user') {
-      seenLatestUser = true
-      continue
-    }
-
-    if (seenLatestUser && message.role === 'assistant') {
-      return getMessageText(message)
-    }
-  }
-
-  return ''
-}
 
 async function writeCalendarEvent(
   session: NonNullable<SessionContext>,

@@ -14,7 +14,7 @@ import {
 describe('PromptInput', () => {
   it('clears the textarea immediately after submit', async () => {
     const user = userEvent.setup()
-    let resolveSubmit: (() => void) | null = null
+    let resolveSubmit: (() => void) | undefined
 
     render(
       <PromptInput

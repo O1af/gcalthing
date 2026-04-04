@@ -46,7 +46,7 @@ describe('chat UI tool summaries', () => {
     expect(
       getGoogleCalendarToolSummary(
         toolPart({
-          approval: { approved: false },
+          approval: { approved: false, id: 'approval-1' },
           state: 'approval-responded',
           type: 'tool-delete_event',
         }),

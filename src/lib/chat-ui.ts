@@ -1,5 +1,15 @@
 import type { FileUIPart, ToolUIPart, UIMessage } from 'ai'
-import type { ChatNotice, SourceInput } from '@/lib/contracts'
+import {
+  calendarToolSignInRequiredSchema,
+  writeCalendarToolSuccessSchema,
+  type CheckAvailabilityToolOutput,
+  type GetEventToolOutput,
+  type ListWritableCalendarsToolOutput,
+  type SearchEventsToolOutput,
+  type SourceInput,
+  type WriteCalendarToolOutput,
+  type WriteCalendarToolSuccess,
+} from '@/lib/contracts'
 
 export type GoogleCalendarToolName =
   | 'list_writable_calendars'
@@ -12,13 +22,20 @@ export type GoogleCalendarToolName =
   | 'delete_event'
 
 export type GoogleCalendarUITools = Record<
-  GoogleCalendarToolName,
-  { input: unknown; output: unknown }
->
+  'list_writable_calendars',
+  { input: unknown; output: ListWritableCalendarsToolOutput }
+> &
+  Record<'search_events', { input: unknown; output: SearchEventsToolOutput }> &
+  Record<'get_event', { input: unknown; output: GetEventToolOutput }> &
+  Record<'check_availability', { input: unknown; output: CheckAvailabilityToolOutput }> &
+  Record<
+    'create_event' | 'update_event' | 'reschedule_event' | 'delete_event',
+    { input: unknown; output: WriteCalendarToolOutput }
+  >
 
 export type AppChatMessage = UIMessage<
   never,
-  { chatNotice: ChatNotice },
+  never,
   GoogleCalendarUITools
 >
 
@@ -102,6 +119,16 @@ export function getGoogleCalendarToolSummary(
   }
   if (toolPart.state === 'output-error') return 'Google Calendar returned an error for this step.'
   if (toolPart.state === 'output-denied') return 'This calendar step was denied.'
+  if (toolPart.state === 'output-available') {
+    const signInDetail = getGoogleCalendarSignInDetail(toolPart)
+    if (signInDetail) {
+      return signInDetail
+    }
+
+    if (toolPart.output && toolPart.output.status === 'needs-input') {
+      return toolPart.output.detail
+    }
+  }
 
   const meta = TOOL_META[extractToolName(toolPart.type)]
   return toolPart.state === 'output-available' ? meta.done : meta.doing
@@ -150,9 +177,26 @@ export function toSourceInputsFromMessage(message: AppChatMessage): SourceInput[
   return inputs
 }
 
-export function getMessageNotice(message: AppChatMessage): ChatNotice | null {
-  const noticePart = message.parts.find((part) => part.type === 'data-chatNotice')
-  return noticePart?.data ?? null
+export function getGoogleCalendarSignInDetail(
+  toolPart: GoogleCalendarToolUIPart,
+): string | null {
+  if (toolPart.state !== 'output-available') {
+    return null
+  }
+
+  const parsed = calendarToolSignInRequiredSchema.safeParse(toolPart.output)
+  return parsed.success ? parsed.data.detail : null
+}
+
+export function getGoogleCalendarWriteSuccess(
+  toolPart: GoogleCalendarToolUIPart,
+): WriteCalendarToolSuccess | null {
+  if (toolPart.state !== 'output-available') {
+    return null
+  }
+
+  const parsed = writeCalendarToolSuccessSchema.safeParse(toolPart.output)
+  return parsed.success ? parsed.data : null
 }
 
 function inferTextSourceType(text: string): TextSourceType {

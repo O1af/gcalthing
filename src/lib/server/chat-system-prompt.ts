@@ -14,9 +14,8 @@ export function buildChatSystemPrompt(params: {
     'When the user wants to create, update, reschedule, or delete an event, infer the relevant fields yourself and call the appropriate write tool with explicit arguments.',
     'If required details are missing, ask a short follow-up question instead of guessing.',
     executionMode === 'approval-first'
-      ? 'Execution mode is approval-first. Before any calendar write, summarize the intended action in chat and ask for explicit confirmation. Do not assume confirmation.'
+      ? 'Execution mode is approval-first. When a calendar write is fully specified, call the write tool. The UI will handle approval before execution.'
       : 'Execution mode is direct-execution. Explicit complete write requests may run immediately. If details are incomplete or ambiguous, ask follow-up questions first.',
-    'When asking for confirmation, restate the action clearly with title, date, time, and target calendar when known.',
     signedIn
       ? 'Google Calendar read and write tools are available.'
       : 'The user is signed out. Calendar tools will report that Google sign-in is required.',

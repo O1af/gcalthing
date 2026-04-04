@@ -230,15 +230,117 @@ export const submitEventResponseSchema = z.object({
   factChangesApplied: factChangeSetSchema,
 })
 
-export const chatNoticeSchema = z.discriminatedUnion('kind', [
+export const calendarToolSignInRequiredSchema = z.object({
+  detail: z.string(),
+  status: z.literal('sign-in-required'),
+})
+
+export const calendarToolNeedsInputSchema = z.object({
+  detail: z.string(),
+  status: z.literal('needs-input'),
+})
+
+export const calendarToolEventSummarySchema = z.object({
+  calendarId: z.string(),
+  calendarName: z.string(),
+  end: z
+    .object({
+      date: z.string().optional(),
+      dateTime: z.string().optional(),
+      timeZone: z.string().optional(),
+    })
+    .nullable()
+    .default(null),
+  id: z.string(),
+  location: z.string().nullable().default(null),
+  start: z
+    .object({
+      date: z.string().optional(),
+      dateTime: z.string().optional(),
+      timeZone: z.string().optional(),
+    })
+    .nullable()
+    .default(null),
+  summary: z.string(),
+})
+
+export const calendarToolBusyIntervalSchema = z.object({
+  end: z.string(),
+  start: z.string(),
+})
+
+export const calendarToolSuccessBaseSchema = z.object({
+  detail: z.string(),
+  status: z.literal('ok'),
+})
+
+export const listWritableCalendarsToolOutputSchema = z.union([
+  calendarToolSignInRequiredSchema,
   z.object({
-    kind: z.literal('event-success'),
-    response: submitEventResponseSchema,
-  }),
-  z.object({
-    kind: z.literal('sign-in-required'),
+    calendars: z.array(calendarOptionSchema),
     detail: z.string(),
+    status: z.literal('ok'),
   }),
+])
+
+export const searchEventsToolOutputSchema = z.union([
+  z.object({
+    detail: z.string(),
+    events: z.array(calendarToolEventSummarySchema),
+    status: z.literal('ok'),
+  }),
+])
+
+export const getEventToolOutputSchema = z.union([
+  calendarToolSignInRequiredSchema,
+  z.object({
+    detail: z.string(),
+    event: calendarToolEventSummarySchema.extend({
+      attendees: z
+        .array(
+          z.object({
+            displayName: z.string().optional(),
+            email: z.string().optional(),
+          }),
+        )
+        .default([]),
+      description: z.string().nullable().default(null),
+    }),
+    status: z.literal('ok'),
+  }),
+])
+
+export const checkAvailabilityToolOutputSchema = z.union([
+  calendarToolSignInRequiredSchema,
+  z.object({
+    calendars: z.array(
+      z.object({
+        busy: z.array(calendarToolBusyIntervalSchema).default([]),
+        calendarId: z.string(),
+        calendarName: z.string(),
+      }),
+    ),
+    detail: z.string(),
+    status: z.literal('ok'),
+    timeMax: z.string(),
+    timeMin: z.string(),
+    timezone: z.string(),
+  }),
+])
+
+export const writeCalendarToolSuccessSchema = calendarToolSuccessBaseSchema.extend({
+  actionPerformed: z.enum(['created', 'updated', 'deleted']),
+  calendarId: z.string(),
+  eventId: z.string(),
+  factChangesApplied: factChangeSetSchema,
+  htmlLink: z.string().url().nullable().default(null),
+  sendUpdates: z.boolean(),
+})
+
+export const writeCalendarToolOutputSchema = z.union([
+  calendarToolNeedsInputSchema,
+  calendarToolSignInRequiredSchema,
+  writeCalendarToolSuccessSchema,
 ])
 
 export type SourceInput = z.infer<typeof sourceInputSchema>
@@ -260,7 +362,18 @@ export type ProposedAction = z.infer<typeof proposedActionSchema>
 export type RefreshReviewDraftRequest = z.infer<typeof refreshReviewDraftRequestSchema>
 export type SubmitEventRequest = z.infer<typeof submitEventRequestSchema>
 export type SubmitEventResponse = z.infer<typeof submitEventResponseSchema>
-export type ChatNotice = z.infer<typeof chatNoticeSchema>
+export type CalendarToolNeedsInput = z.infer<typeof calendarToolNeedsInputSchema>
+export type CalendarToolSignInRequired = z.infer<typeof calendarToolSignInRequiredSchema>
+export type ListWritableCalendarsToolOutput = z.infer<
+  typeof listWritableCalendarsToolOutputSchema
+>
+export type SearchEventsToolOutput = z.infer<typeof searchEventsToolOutputSchema>
+export type GetEventToolOutput = z.infer<typeof getEventToolOutputSchema>
+export type CheckAvailabilityToolOutput = z.infer<
+  typeof checkAvailabilityToolOutputSchema
+>
+export type WriteCalendarToolSuccess = z.infer<typeof writeCalendarToolSuccessSchema>
+export type WriteCalendarToolOutput = z.infer<typeof writeCalendarToolOutputSchema>
 
 export const emptyFactsContext: FactsContext = factsContextSchema.parse({})
 

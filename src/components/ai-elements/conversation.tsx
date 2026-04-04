@@ -2,11 +2,39 @@
 
 import { ArrowDownIcon } from 'lucide-react'
 import type { ComponentProps, ReactNode } from 'react'
-import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom'
+import {
+  StickToBottom,
+  useStickToBottomContext,
+  type StickToBottomInstance,
+} from 'use-stick-to-bottom'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>
+
+export interface ConversationRootProps
+  extends Omit<ComponentProps<typeof StickToBottom>, 'children'> {
+  children: ReactNode
+  instance: StickToBottomInstance
+}
+
+export function ConversationRoot({
+  children,
+  className,
+  instance,
+  ...props
+}: ConversationRootProps) {
+  return (
+    <StickToBottom
+      className={cn('relative flex min-h-0 flex-1 flex-col', className)}
+      instance={instance}
+      role="log"
+      {...props}
+    >
+      {children}
+    </StickToBottom>
+  )
+}
 
 export function Conversation({ className, ...props }: ConversationProps) {
   return (
@@ -29,6 +57,20 @@ export function ConversationContent({
   return (
     <StickToBottom.Content
       className={cn('flex flex-col gap-8 p-4', className)}
+      {...props}
+    />
+  )
+}
+
+export type ConversationBodyProps = ComponentProps<'div'>
+
+export function ConversationBody({
+  className,
+  ...props
+}: ConversationBodyProps) {
+  return (
+    <div
+      className={cn('flex flex-col gap-4', className)}
       {...props}
     />
   )
@@ -71,10 +113,13 @@ export function ConversationEmptyState({
   )
 }
 
-export type ConversationScrollButtonProps = ComponentProps<typeof Button>
+export type ConversationScrollButtonProps = ComponentProps<typeof Button> & {
+  containerClassName?: string
+}
 
 export function ConversationScrollButton({
   className,
+  containerClassName,
   ...props
 }: ConversationScrollButtonProps) {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext()
@@ -84,19 +129,26 @@ export function ConversationScrollButton({
   }
 
   return (
-    <Button
-      aria-label="Scroll to bottom"
+    <div
       className={cn(
-        'absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted',
-        className,
+        'pointer-events-none sticky bottom-4 z-10 flex justify-center',
+        containerClassName,
       )}
-      onClick={() => scrollToBottom()}
-      size="icon"
-      type="button"
-      variant="outline"
-      {...props}
     >
-      <ArrowDownIcon className="size-4" />
-    </Button>
+      <Button
+        aria-label="Scroll to bottom"
+        className={cn(
+          'pointer-events-auto rounded-full dark:bg-background dark:hover:bg-muted',
+          className,
+        )}
+        onClick={() => scrollToBottom()}
+        size="icon"
+        type="button"
+        variant="outline"
+        {...props}
+      >
+        <ArrowDownIcon className="size-4" />
+      </Button>
+    </div>
   )
 }
