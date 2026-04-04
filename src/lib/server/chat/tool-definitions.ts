@@ -1,40 +1,35 @@
 import { tool, type ToolExecutionOptions } from 'ai'
 import { z } from 'zod'
 import {
+  attendeeInputSchema,
   checkAvailabilityToolOutputSchema,
   getEventToolOutputSchema,
   listWritableCalendarsToolOutputSchema,
+  manageFactsToolOutputSchema,
   searchEventsToolOutputSchema,
   writeCalendarToolOutputSchema,
   type ExecutionMode,
+  type FactRecord,
   type SourceInput,
-  type SubmitEventResponse,
 } from '@/lib/contracts'
-import { deriveEndTime, formatRfc3339InTimeZone } from '@/lib/domain/date-time'
-import type { GoogleCalendarListEntry } from '@/lib/server/google-calendar'
+import { deriveEndTime, formatRfc3339InTimeZone, getDurationMinutes } from '@/lib/domain/date-time'
+import type { GoogleCalendarEvent, GoogleCalendarListEntry } from '@/lib/server/google-calendar'
 import type { SessionContext } from './index'
 import {
+  buildWriteEventRequest,
   executeLoggedTool,
-  executeUpdateOrReschedule,
-  normalizeCreateRequest,
-  submitWriteRequest,
+  submitCreateEvent,
+  submitUpdateEvent,
   withSession,
 } from './chat-helpers'
 
-const attendeeMentionInputSchema = z.object({
-  email: z.string().email().nullable().optional(),
-  name: z.string().trim().min(1),
-  optional: z.boolean().optional(),
-})
-
-export const eventInputSchema = z.object({
+const eventInputSchema = z.object({
   allDay: z.boolean().optional(),
-  attendeeMentions: z.array(attendeeMentionInputSchema).optional(),
+  attendees: z.array(attendeeInputSchema).optional(),
   calendarId: z.string().trim().nullable().optional(),
   date: z.string().trim().nullable().optional(),
   description: z.string().trim().nullable().optional(),
   durationMinutes: z.number().int().positive().nullable().optional(),
-  endDate: z.string().trim().nullable().optional(),
   endTime: z.string().trim().nullable().optional(),
   location: z.string().trim().nullable().optional(),
   recurrenceRule: z.string().trim().nullable().optional(),
@@ -77,11 +72,19 @@ const deleteEventInputSchema = z.object({
   when: z.string().trim().optional(),
 })
 
+const manageFactsInputSchema = z.object({
+  action: z.enum(['add', 'remove']),
+  fact: z.string().min(1).optional().describe('The fact to remember (required for add)'),
+  id: z.string().min(1).optional().describe('The id of the fact to remove (required for remove)'),
+})
+
 export interface CalendarAgentContext {
+  calendars: GoogleCalendarListEntry[]
   executionMode: ExecutionMode
-  getCalendars: (() => Promise<GoogleCalendarListEntry[]>) | null
+  facts: FactRecord[]
   latestUserText: string
   localTimeZone: string
+  nearTermEvents: GoogleCalendarEvent[]
   session: SessionContext | null
   sourceInputs: SourceInput[]
   turnId: string
@@ -101,8 +104,9 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
           withSession(
             context.session,
             'Sign in with Google to list your calendars.',
-            async () => {
-              const calendars = await requireCalendars(context)
+            async (session) => {
+              const { listWritableCalendars } = await import('@/lib/server/google-calendar')
+              const calendars = await listWritableCalendars(session.tokens.accessToken)
 
               return {
                 calendars: calendars.map((calendar) => ({
@@ -125,7 +129,7 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
     }),
     search_events: tool({
       description:
-        'Search Google Calendar events by text query, date range, and optional calendar IDs.',
+        'Search Google Calendar events by text query, date range, and optional calendar IDs. Use this for events outside the schedule window in your context.',
       inputSchema: searchEventsInputSchema,
       outputSchema: searchEventsToolOutputSchema,
       execute: async ({ calendarIds, dateFrom, dateTo, limit, query }, options) => {
@@ -138,11 +142,10 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
               const { searchGoogleCalendarEvents } = await import(
                 '@/lib/server/google-calendar'
               )
-              const calendars = await requireCalendars(context)
               const events = await searchGoogleCalendarEvents({
                 accessToken: session.tokens.accessToken,
                 calendarIds,
-                calendars,
+                calendars: context.calendars,
                 limit,
                 query,
                 timeMax: dateTo
@@ -188,9 +191,8 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
               const { getGoogleCalendarEvent } = await import(
                 '@/lib/server/google-calendar'
               )
-              const calendars = await requireCalendars(context)
               const calendarName =
-                calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId
+                context.calendars.find((c) => c.id === calendarId)?.summary ?? calendarId
               const event = await getGoogleCalendarEvent(
                 session.tokens.accessToken,
                 calendarId,
@@ -233,11 +235,10 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
             'Sign in with Google to check calendar availability.',
             async (session) => {
               const { queryFreeBusy } = await import('@/lib/server/google-calendar')
-              const calendars = await requireCalendars(context)
               const targetCalendarIds =
                 calendarIds && calendarIds.length > 0
                   ? calendarIds
-                  : calendars.slice(0, 5).map((calendar) => calendar.id)
+                  : context.calendars.slice(0, 5).map((c) => c.id)
               const resolvedTimeZone = timezone ?? context.localTimeZone
               const resolvedEndTime = endTime ?? deriveEndTime(startTime, durationMinutes ?? 60)
               const timeMin = formatRfc3339InTimeZone(date, startTime, resolvedTimeZone)
@@ -250,12 +251,11 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
               )
 
               return {
-                calendars: targetCalendarIds.map((calendarId) => ({
-                  busy: busy[calendarId]?.busy ?? [],
-                  calendarId,
+                calendars: targetCalendarIds.map((calId) => ({
+                  busy: busy[calId]?.busy ?? [],
+                  calendarId: calId,
                   calendarName:
-                    calendars.find((calendar) => calendar.id === calendarId)?.summary ??
-                    calendarId,
+                    context.calendars.find((c) => c.id === calId)?.summary ?? calId,
                 })),
                 detail: `Checked availability across ${targetCalendarIds.length} calendar${targetCalendarIds.length === 1 ? '' : 's'} from ${startTime} to ${resolvedEndTime} on ${date}.`,
                 status: 'ok' as const,
@@ -269,36 +269,34 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
       },
     }),
     create_event: tool({
-      description: 'Create a Google Calendar event from explicit event fields.',
+      description:
+        'Create a Google Calendar event. Provide title, date, startTime (or allDay), calendarId, and optionally attendees, location, duration, description, recurrence.',
       inputSchema: eventInputSchema,
       needsApproval: writeNeedsApproval,
       outputSchema: writeCalendarToolOutputSchema,
-      execute: async (eventInput, options) => {
+      execute: async (eventInput, options): Promise<WriteToolResult> => {
         const context = getCalendarAgentContext(options)
         return executeLoggedTool('create_event', context.turnId, () =>
           withSession(
             context.session,
             'Sign in with Google before creating events.',
             async (session) => {
-              const normalized = await normalizeCreateRequest({
-                accessToken: session.tokens.accessToken,
-                eventInput,
-                localTimeZone: context.localTimeZone,
-                sourceInputs: context.sourceInputs,
-                userSub: session.profile.sub,
-              })
-              if (normalized.request == null) {
+              const { validateRequiredFields } = await import('./chat-helpers')
+              const missing = validateRequiredFields(eventInput)
+              if (missing.length > 0) {
                 return {
-                  detail:
-                    normalized.detail ?? 'More detail is needed before writing to Google Calendar.',
+                  detail: `Missing required fields: ${missing.join(', ')}. Ask the user for these details.`,
                   status: 'needs-input' as const,
                 }
               }
 
-              return submitWriteRequest({
-                request: normalized.request,
-                session,
-              })
+              const request = buildWriteEventRequest(
+                eventInput as Record<string, unknown>,
+                context.localTimeZone,
+                context.sourceInputs,
+              )
+
+              return submitCreateEvent({ request, session })
             },
           ),
         )
@@ -306,7 +304,7 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
     }),
     update_event: tool({
       description:
-        'Update an existing Google Calendar event. Provide the event id, calendar id, and changed fields.',
+        'Update or reschedule an existing Google Calendar event. Provide calendarId, eventId, and the fields to change. Unchanged fields are preserved from the existing event.',
       inputSchema: updateEventInputSchema,
       needsApproval: writeNeedsApproval,
       outputSchema: writeCalendarToolOutputSchema,
@@ -315,37 +313,58 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
         options,
       ): Promise<WriteToolResult> => {
         const context = getCalendarAgentContext(options)
-        return executeUpdateOrReschedule('update_event', {
-          calendarId,
-          eventId,
-          eventInput,
-          localTimeZone: context.localTimeZone,
-          session: context.session,
-          sourceInputs: context.sourceInputs,
-          turnId: context.turnId,
-        })
-      },
-    }),
-    reschedule_event: tool({
-      description:
-        'Reschedule an existing Google Calendar event by changing its date and or time fields.',
-      inputSchema: updateEventInputSchema,
-      needsApproval: writeNeedsApproval,
-      outputSchema: writeCalendarToolOutputSchema,
-      execute: async (
-        { calendarId, eventId, ...eventInput },
-        options,
-      ): Promise<WriteToolResult> => {
-        const context = getCalendarAgentContext(options)
-        return executeUpdateOrReschedule('reschedule_event', {
-          calendarId,
-          eventId,
-          eventInput,
-          localTimeZone: context.localTimeZone,
-          session: context.session,
-          sourceInputs: context.sourceInputs,
-          turnId: context.turnId,
-        })
+        return executeLoggedTool('update_event', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google before updating events.',
+            async (session) => {
+              const { getGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
+              const calendarName =
+                context.calendars.find((c) => c.id === calendarId)?.summary ?? calendarId
+              const current = await getGoogleCalendarEvent(
+                session.tokens.accessToken,
+                calendarId,
+                calendarName,
+                eventId,
+              )
+
+              const isAllDay = eventInput.allDay ?? Boolean(current.start?.date && !current.start?.dateTime)
+              const merged = {
+                title: eventInput.title ?? current.summary ?? '',
+                date: eventInput.date ?? current.start?.date ?? current.start?.dateTime?.slice(0, 10) ?? '',
+                startTime: eventInput.startTime ?? current.start?.dateTime?.slice(11, 16) ?? null,
+                endTime: eventInput.endTime ?? current.end?.dateTime?.slice(11, 16) ?? null,
+                durationMinutes: eventInput.durationMinutes ?? getDurationMinutes(current) ?? null,
+                allDay: isAllDay,
+                timezone: eventInput.timezone ?? current.start?.timeZone ?? context.localTimeZone,
+                location: eventInput.location ?? current.location ?? null,
+                description: eventInput.description ?? current.description ?? null,
+                recurrenceRule: eventInput.recurrenceRule ?? null,
+                calendarId,
+                attendees: eventInput.attendees ?? (current.attendees ?? [])
+                  .filter((a): a is { email: string; displayName?: string } => Boolean(a.email))
+                  .map((a) => ({ email: a.email, name: a.displayName ?? a.email })),
+              }
+
+              const { validateRequiredFields } = await import('./chat-helpers')
+              const missing = validateRequiredFields(merged)
+              if (missing.length > 0) {
+                return {
+                  detail: `Missing required fields after merge: ${missing.join(', ')}.`,
+                  status: 'needs-input' as const,
+                }
+              }
+
+              const request = buildWriteEventRequest(
+                merged as Record<string, unknown>,
+                context.localTimeZone,
+                context.sourceInputs,
+              )
+
+              return submitUpdateEvent({ calendarId, eventId, request, session })
+            },
+          ),
+        )
       },
     }),
     delete_event: tool({
@@ -374,17 +393,56 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
                 calendarId: deletion.calendarId,
                 detail: `Deleted ${title?.trim() || 'the selected event'} from Google Calendar.`,
                 eventId: deletion.eventId,
-                factChangesApplied: {
-                  created: [],
-                  staled: [],
-                  updated: [],
-                },
                 htmlLink: deletion.htmlLink,
                 sendUpdates: deletion.sendUpdates,
                 status: 'ok' as const,
-              } satisfies SubmitEventResponse & {
-                detail: string
-                status: 'ok'
+              }
+            },
+          ),
+        )
+      },
+    }),
+    manage_facts: tool({
+      description:
+        'Add or remove a fact from your long-term memory. You decide what is worth remembering. ' +
+        'Facts persist across conversations and appear in your system context. ' +
+        'Proactively save useful information (names, emails, preferences, patterns). ' +
+        'Remove facts that are outdated or contradicted by new information.',
+      inputSchema: manageFactsInputSchema,
+      outputSchema: manageFactsToolOutputSchema,
+      execute: async ({ action, fact, id }, options) => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('manage_facts', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in to manage facts.',
+            async (session) => {
+              const { addFact, removeFact } = await import('@/lib/server/facts')
+
+              if (action === 'add') {
+                if (!fact) {
+                  return {
+                    detail: 'A fact string is required when adding.',
+                    status: 'ok' as const,
+                  }
+                }
+                const record = await addFact(session.profile.sub, fact)
+                return {
+                  detail: `Saved fact: "${fact}" (id: ${record.id})`,
+                  status: 'ok' as const,
+                }
+              }
+
+              if (!id) {
+                return {
+                  detail: 'A fact id is required when removing.',
+                  status: 'ok' as const,
+                }
+              }
+              const removed = await removeFact(session.profile.sub, id)
+              return {
+                detail: removed ? `Removed fact ${id}.` : `No fact found with id ${id}.`,
+                status: 'ok' as const,
               }
             },
           ),
@@ -396,12 +454,4 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
 
 function getCalendarAgentContext(options: ToolExecutionOptions): CalendarAgentContext {
   return options.experimental_context as CalendarAgentContext
-}
-
-async function requireCalendars(context: CalendarAgentContext) {
-  const calendars = await context.getCalendars?.()
-  if (!calendars) {
-    throw new Error('Calendar context is unavailable for this request.')
-  }
-  return calendars
 }

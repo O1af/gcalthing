@@ -322,11 +322,6 @@ describe('WorkspaceShell', () => {
                 calendarId: 'primary',
                 detail: 'Created the event in Google Calendar.',
                 eventId: 'evt-1',
-                factChangesApplied: {
-                  created: [],
-                  staled: [],
-                  updated: [],
-                },
                 htmlLink: 'https://calendar.google.com/event?eid=abc',
                 sendUpdates: false,
                 status: 'ok',

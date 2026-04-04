@@ -1,6 +1,5 @@
 import { addDays, subDays } from "date-fns";
-import type { SubmitEventRequest } from "@/lib/contracts";
-import { getSelectedAttendees } from "@/lib/contracts";
+import type { WriteEventRequest } from "@/lib/contracts";
 import { deriveEndTime } from "@/lib/domain/date-time";
 
 export interface GoogleCalendarListEntry {
@@ -42,19 +41,18 @@ export async function listWritableCalendars(accessToken: string) {
   );
 }
 
-export async function listRecentEvents(
+export async function loadNearTermEvents(
   accessToken: string,
   calendars: GoogleCalendarListEntry[],
-  maxEvents = 150,
-) {
+): Promise<GoogleCalendarEvent[]> {
   const now = new Date();
-  const timeMin = subDays(now, 60).toISOString();
-  const timeMax = addDays(now, 30).toISOString();
+  const timeMin = subDays(now, 7).toISOString();
+  const timeMax = addDays(now, 7).toISOString();
 
   const perCalendar = await Promise.all(
-    calendars.slice(0, 5).map(async (calendar) => {
+    calendars.slice(0, 10).map(async (calendar) => {
       const search = new URLSearchParams({
-        maxResults: String(40),
+        maxResults: "25",
         orderBy: "startTime",
         singleEvents: "true",
         timeMax,
@@ -70,7 +68,7 @@ export async function listRecentEvents(
     }),
   );
 
-  return perCalendar.flat().slice(0, maxEvents);
+  return perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
 }
 
 export async function searchGoogleCalendarEvents(params: {
@@ -154,13 +152,13 @@ export async function queryFreeBusy(
 
 export async function createGoogleCalendarEvent(
   accessToken: string,
-  request: SubmitEventRequest,
+  request: WriteEventRequest,
   calendarNameById: Map<string, string>,
 ) {
   return saveGoogleCalendarEvent({
     accessToken,
     actionPerformed: "created",
-    calendarId: request.event.calendarId,
+    calendarId: request.calendarId,
     calendarNameById,
     method: "POST",
     request,
@@ -171,7 +169,7 @@ export async function updateGoogleCalendarEvent(
   accessToken: string,
   eventId: string,
   calendarId: string,
-  request: SubmitEventRequest,
+  request: WriteEventRequest,
   calendarNameById: Map<string, string>,
 ) {
   return saveGoogleCalendarEvent({
@@ -207,65 +205,64 @@ export async function deleteGoogleCalendarEvent(
   };
 }
 
-function buildGoogleEventPayload(request: SubmitEventRequest) {
-  const { event } = request;
-  const descriptionParts = [event.description?.trim()];
+function buildGoogleEventPayload(request: WriteEventRequest) {
+  const descriptionParts = [request.description?.trim()];
 
   if (request.appendSourceDetails && request.sourceInputs.length > 0) {
     descriptionParts.push("", "Source details", ...request.sourceInputs.map(formatSourceInput));
   }
 
-  const attendees = getSelectedAttendees(request.attendeeGroups).map((attendee) => ({
-    displayName: attendee.displayName,
-    email: attendee.email,
+  const attendees = request.attendees.map((a) => ({
+    displayName: a.name,
+    email: a.email,
   }));
 
-  const recurrence = event.recurrenceRule
+  const recurrence = request.recurrenceRule
     ? [
-        event.recurrenceRule.startsWith("RRULE:")
-          ? event.recurrenceRule
-          : `RRULE:${event.recurrenceRule}`,
+        request.recurrenceRule.startsWith("RRULE:")
+          ? request.recurrenceRule
+          : `RRULE:${request.recurrenceRule}`,
       ]
     : undefined;
 
-  if (event.allDay && event.date) {
-    const endDate = event.endDate ?? addDays(new Date(event.date), 1).toISOString().slice(0, 10);
+  if (request.allDay && request.date) {
+    const endDate = request.date;
     return {
       attendees,
       description: descriptionParts.filter(Boolean).join("\n"),
       end: { date: endDate },
-      location: event.location ?? undefined,
+      location: request.location ?? undefined,
       recurrence,
-      start: { date: event.date },
-      summary: event.title || "Untitled event",
+      start: { date: request.date },
+      summary: request.title || "Untitled event",
     };
   }
 
-  if (!event.date || !event.startTime) {
+  if (!request.date || !request.startTime) {
     throw new Error("A start date and start time are required to create the event");
   }
 
-  const endDate = event.endDate ?? event.date;
-  const endTime = event.endTime ?? deriveEndTime(event.startTime, event.durationMinutes ?? 60);
+  const endTime = request.endTime ?? deriveEndTime(request.startTime, request.durationMinutes ?? 60);
+  const endDate = request.date;
 
   return {
     attendees,
     description: descriptionParts.filter(Boolean).join("\n"),
     end: {
       dateTime: `${endDate}T${endTime}:00`,
-      timeZone: event.timezone ?? "UTC",
+      timeZone: request.timezone ?? "UTC",
     },
-    location: event.location ?? undefined,
+    location: request.location ?? undefined,
     recurrence,
     start: {
-      dateTime: `${event.date}T${event.startTime}:00`,
-      timeZone: event.timezone ?? "UTC",
+      dateTime: `${request.date}T${request.startTime}:00`,
+      timeZone: request.timezone ?? "UTC",
     },
-    summary: event.title || "Untitled event",
+    summary: request.title || "Untitled event",
   };
 }
 
-function formatSourceInput(input: SubmitEventRequest["sourceInputs"][number]) {
+function formatSourceInput(input: WriteEventRequest["sourceInputs"][number]) {
   if (input.kind === "text") {
     return `- ${input.label}: ${input.text.slice(0, 300)}`;
   }
@@ -280,12 +277,12 @@ async function saveGoogleCalendarEvent(params: {
   calendarNameById: Map<string, string>;
   eventId?: string;
   method: "POST" | "PATCH";
-  request: SubmitEventRequest;
+  request: WriteEventRequest;
 }) {
   const { accessToken, actionPerformed, calendarId, calendarNameById, eventId, method, request } =
     params;
   const eventBody = buildGoogleEventPayload(request);
-  const sendUpdates = getSelectedAttendees(request.attendeeGroups).length > 0;
+  const sendUpdates = request.attendees.length > 0;
   const path = eventId
     ? `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`
     : `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;

@@ -5,6 +5,7 @@ import {
 import type { AppChatMessage } from "@/lib/chat-ui";
 import { getMessageText } from "@/lib/chat-ui";
 import type { ExecutionMode, SourceInput } from "@/lib/contracts";
+import { emptyFactsContext } from "@/lib/contracts";
 import { logDebug } from "@/lib/server/debug";
 import { getServerEnv } from "@/lib/server/env";
 import { buildCalendarAgentOptions, getCalendarAgents } from "./agent";
@@ -33,43 +34,51 @@ export async function streamAssistantTurn(params: {
   const turnId = crypto.randomUUID().slice(0, 8);
   const { approval, direct } = getCalendarAgents();
 
+  const { listWritableCalendars, loadNearTermEvents } = await import(
+    "@/lib/server/google-calendar"
+  );
+  const { loadFacts } = await import("@/lib/server/facts");
+
+  const calendars = session
+    ? await listWritableCalendars(session.tokens.accessToken)
+    : [];
+
+  const [facts, nearTermEvents] = session
+    ? await Promise.all([
+        loadFacts(session.profile.sub),
+        loadNearTermEvents(session.tokens.accessToken, calendars),
+      ])
+    : [emptyFactsContext, []];
+
   logDebug("ai:chat", "turn:start", {
+    calendarCount: calendars.length,
     executionMode: input.executionMode,
+    factCount: facts.length,
     messageCount: input.messages.length,
     model: env.OPENAI_MODEL,
+    nearTermEventCount: nearTermEvents.length,
     signedIn: Boolean(session),
     sourceInputCount: input.sourceInputs.length,
     turnId,
   });
-
-  const getCalendars = session
-    ? onceLazy(() =>
-        import("@/lib/server/google-calendar").then((m) =>
-          m.listWritableCalendars(session.tokens.accessToken),
-        ),
-      )
-    : null;
 
   return createAgentUIStreamResponse({
     abortSignal: params.abortSignal,
     agent: input.executionMode === "approval-first" ? approval : direct,
     consumeSseStream: consumeStream,
     options: buildCalendarAgentOptions({
+      calendars,
       executionMode: input.executionMode,
-      getCalendars,
+      facts,
       latestUserText: input.latestUserText,
       localTimeZone: input.localTimeZone,
+      nearTermEvents,
       session,
       sourceInputs: input.sourceInputs,
       turnId,
     }),
     uiMessages: params.messages as unknown[],
   });
-}
-
-function onceLazy<T>(fn: () => Promise<T>): () => Promise<T> {
-  let cached: Promise<T> | null = null;
-  return () => (cached ??= fn());
 }
 
 function buildAssistantTurnInput(params: {

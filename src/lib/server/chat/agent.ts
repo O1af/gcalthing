@@ -1,10 +1,10 @@
 import { ToolLoopAgent, stepCountIs } from 'ai'
 import { z } from 'zod'
-import { executionModeSchema, sourceInputSchema, type ExecutionMode, type SourceInput } from '@/lib/contracts'
+import { executionModeSchema, factsContextSchema, sourceInputSchema, type ExecutionMode, type FactRecord, type SourceInput } from '@/lib/contracts'
 import { getOpenAIModel } from '@/lib/server/ai-model'
 import { logDebug } from '@/lib/server/debug'
 import { getServerEnv } from '@/lib/server/env'
-import type { GoogleCalendarListEntry } from '@/lib/server/google-calendar'
+import type { GoogleCalendarEvent, GoogleCalendarListEntry } from '@/lib/server/google-calendar'
 import { buildChatSystemPrompt } from '@/lib/server/chat-system-prompt'
 import { createCalendarToolSet, type CalendarAgentContext } from './tool-definitions'
 import type { SessionContext } from './index'
@@ -15,9 +15,12 @@ export interface CalendarAgentCallOptions extends CalendarAgentContext {
 
 const calendarAgentCallOptionsSchema = z
   .object({
+    calendars: z.array(z.any()),
     executionMode: executionModeSchema,
+    facts: factsContextSchema,
     latestUserText: z.string(),
     localTimeZone: z.string(),
+    nearTermEvents: z.array(z.any()),
     signedIn: z.boolean(),
     sourceInputs: z.array(sourceInputSchema),
     turnId: z.string(),
@@ -77,29 +80,37 @@ function createCalendarAgent(params: {
       ...baseCall,
       experimental_context: options,
       instructions: buildChatSystemPrompt({
+        calendars: options?.calendars ?? [],
         executionMode: options?.executionMode ?? 'approval-first',
+        facts: options?.facts ?? [],
+        localTimeZone: options?.localTimeZone ?? 'UTC',
+        nearTermEvents: options?.nearTermEvents ?? [],
         signedIn: options?.signedIn ?? false,
       }),
     }),
-    stopWhen: stepCountIs(6),
+    stopWhen: stepCountIs(15),
     tools: createCalendarToolSet(writeNeedsApproval),
   })
 }
 
 export function buildCalendarAgentOptions(params: {
+  calendars: GoogleCalendarListEntry[]
   executionMode: ExecutionMode
-  getCalendars: (() => Promise<GoogleCalendarListEntry[]>) | null
+  facts: FactRecord[]
   latestUserText: string
   localTimeZone: string
+  nearTermEvents: GoogleCalendarEvent[]
   session: SessionContext | null
   sourceInputs: SourceInput[]
   turnId: string
 }): CalendarAgentCallOptions {
   return {
+    calendars: params.calendars,
     executionMode: params.executionMode,
-    getCalendars: params.getCalendars,
+    facts: params.facts,
     latestUserText: params.latestUserText,
     localTimeZone: params.localTimeZone,
+    nearTermEvents: params.nearTermEvents,
     session: params.session,
     signedIn: Boolean(params.session),
     sourceInputs: params.sourceInputs,
