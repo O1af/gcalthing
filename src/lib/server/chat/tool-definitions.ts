@@ -1,33 +1,35 @@
-import { tool } from 'ai'
+import { tool, type ToolExecutionOptions } from 'ai'
 import { z } from 'zod'
-import type { ChatNotice, ExecutionMode, SubmitEventResponse } from '@/lib/contracts'
-import { deriveEndTime, formatRfc3339InTimeZone } from '@/lib/domain/date-time'
-import type { GoogleCalendarListEntry } from '@/lib/server/google-calendar'
-import type { AssistantTurnInput, SessionContext } from './index'
 import {
-  ensureApprovalAllowed,
+  attendeeInputSchema,
+  checkAvailabilityToolOutputSchema,
+  getEventToolOutputSchema,
+  listWritableCalendarsToolOutputSchema,
+  manageFactsToolOutputSchema,
+  searchEventsToolOutputSchema,
+  writeCalendarToolOutputSchema,
+  type ExecutionMode,
+  type FactRecord,
+  type SourceInput,
+} from '@/lib/contracts'
+import { deriveEndTime, formatRfc3339InTimeZone, getDurationMinutes } from '@/lib/domain/date-time'
+import type { GoogleCalendarEvent, GoogleCalendarListEntry } from '@/lib/server/google-calendar'
+import type { SessionContext } from './index'
+import {
+  buildWriteEventRequest,
   executeLoggedTool,
-  executeUpdateOrReschedule,
-  normalizeCreateRequest,
-  submitWriteRequest,
-  summarizeDeleteAction,
+  submitCreateEvent,
+  submitUpdateEvent,
   withSession,
 } from './chat-helpers'
 
-const attendeeMentionInputSchema = z.object({
-  email: z.string().email().nullable().optional(),
-  name: z.string().trim().min(1),
-  optional: z.boolean().optional(),
-})
-
-export const eventInputSchema = z.object({
+const eventInputSchema = z.object({
   allDay: z.boolean().optional(),
-  attendeeMentions: z.array(attendeeMentionInputSchema).optional(),
+  attendees: z.array(attendeeInputSchema).optional(),
   calendarId: z.string().trim().nullable().optional(),
   date: z.string().trim().nullable().optional(),
   description: z.string().trim().nullable().optional(),
   durationMinutes: z.number().int().positive().nullable().optional(),
-  endDate: z.string().trim().nullable().optional(),
   endTime: z.string().trim().nullable().optional(),
   location: z.string().trim().nullable().optional(),
   recurrenceRule: z.string().trim().nullable().optional(),
@@ -70,240 +72,386 @@ const deleteEventInputSchema = z.object({
   when: z.string().trim().optional(),
 })
 
-export function buildTurnTools(params: {
-  executionMode: ExecutionMode
-  getCalendars: (() => Promise<GoogleCalendarListEntry[]>) | null
-  input: AssistantTurnInput
-  session: SessionContext | null
-  setNotice: (notice: ChatNotice | null) => void
-  turnId: string
-}) {
-  const { executionMode, getCalendars, input, session, setNotice, turnId } = params
+const manageFactsInputSchema = z.object({
+  action: z.enum(['add', 'remove']),
+  fact: z.string().min(1).optional().describe('The fact to remember (required for add)'),
+  id: z.string().min(1).optional().describe('The id of the fact to remove (required for remove)'),
+})
 
+export interface CalendarAgentContext {
+  calendars: GoogleCalendarListEntry[]
+  executionMode: ExecutionMode
+  facts: FactRecord[]
+  latestUserText: string
+  localTimeZone: string
+  nearTermEvents: GoogleCalendarEvent[]
+  session: SessionContext | null
+  sourceInputs: SourceInput[]
+  turnId: string
+}
+
+type WriteToolResult = z.infer<typeof writeCalendarToolOutputSchema>
+
+export function createCalendarToolSet(writeNeedsApproval: boolean) {
   return {
     list_writable_calendars: tool({
       description: 'List writable Google Calendars for the signed-in user.',
       inputSchema: z.object({}),
-      execute: async () =>
-        executeLoggedTool('list_writable_calendars', turnId, () =>
-          withSession(session, setNotice, 'Sign in with Google to list your calendars.', async () => {
-            const calendars = await getCalendars!()
+      outputSchema: listWritableCalendarsToolOutputSchema,
+      execute: async (_input, options) => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('list_writable_calendars', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google to list your calendars.',
+            async (session) => {
+              const { listWritableCalendars } = await import('@/lib/server/google-calendar')
+              const calendars = await listWritableCalendars(session.tokens.accessToken)
 
-          return {
-            calendars: calendars.map((calendar) => ({
-              accessRole: calendar.accessRole,
-              id: calendar.id,
-              primary: Boolean(calendar.primary),
-              summary: calendar.summary,
-              timeZone: calendar.timeZone ?? null,
-            })),
-            detail:
-              calendars.length > 0
-                ? `Found ${calendars.length} writable calendar${calendars.length === 1 ? '' : 's'}.`
-                : 'No writable calendars were found.',
-          }
-          })),
+              return {
+                calendars: calendars.map((calendar) => ({
+                  accessRole: calendar.accessRole,
+                  id: calendar.id,
+                  primary: Boolean(calendar.primary),
+                  summary: calendar.summary,
+                  timeZone: calendar.timeZone ?? null,
+                })),
+                detail:
+                  calendars.length > 0
+                    ? `Found ${calendars.length} writable calendar${calendars.length === 1 ? '' : 's'}.`
+                    : 'No writable calendars were found.',
+                status: 'ok' as const,
+              }
+            },
+          ),
+        )
+      },
     }),
     search_events: tool({
-      description: 'Search Google Calendar events by text query, date range, and optional calendar IDs.',
+      description:
+        'Search Google Calendar events by text query, date range, and optional calendar IDs. Use this for events outside the schedule window in your context.',
       inputSchema: searchEventsInputSchema,
-      execute: async ({ calendarIds, dateFrom, dateTo, limit, query }) =>
-        executeLoggedTool('search_events', turnId, () =>
-          withSession(session, setNotice, 'Sign in with Google to search your calendar events.', async (session) => {
-            const { searchGoogleCalendarEvents } = await import('@/lib/server/google-calendar')
-          const calendars = await getCalendars!()
-          const events = await searchGoogleCalendarEvents({
-            accessToken: session.tokens.accessToken,
-            calendarIds,
-            calendars,
-            limit,
-            query,
-            timeMax: dateTo ? `${dateTo}T23:59:59Z` : undefined,
-            timeMin: dateFrom ? `${dateFrom}T00:00:00Z` : undefined,
-          })
+      outputSchema: searchEventsToolOutputSchema,
+      execute: async ({ calendarIds, dateFrom, dateTo, limit, query }, options) => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('search_events', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google to search your calendar events.',
+            async (session) => {
+              const { searchGoogleCalendarEvents } = await import(
+                '@/lib/server/google-calendar'
+              )
+              const events = await searchGoogleCalendarEvents({
+                accessToken: session.tokens.accessToken,
+                calendarIds,
+                calendars: context.calendars,
+                limit,
+                query,
+                timeMax: dateTo
+                  ? formatRfc3339InTimeZone(dateTo, '23:59', context.localTimeZone)
+                  : undefined,
+                timeMin: dateFrom
+                  ? formatRfc3339InTimeZone(dateFrom, '00:00', context.localTimeZone)
+                  : undefined,
+              })
 
-          return {
-            detail:
-              events.length > 0
-                ? `Found ${events.length} matching event${events.length === 1 ? '' : 's'}.`
-                : 'No matching events were found.',
-            events: events.map((event) => ({
-              calendarId: event.calendarId,
-              calendarName: event.calendarName,
-              end: event.end ?? null,
-              id: event.id,
-              location: event.location ?? null,
-              start: event.start ?? null,
-              summary: event.summary ?? '(untitled)',
-            })),
-          }
-          })),
+              return {
+                detail:
+                  events.length > 0
+                    ? `Found ${events.length} matching event${events.length === 1 ? '' : 's'}.`
+                    : 'No matching events were found.',
+                events: events.map((event) => ({
+                  calendarId: event.calendarId,
+                  calendarName: event.calendarName,
+                  end: event.end ?? null,
+                  id: event.id,
+                  location: event.location ?? null,
+                  start: event.start ?? null,
+                  summary: event.summary ?? '(untitled)',
+                })),
+                status: 'ok' as const,
+              }
+            },
+          ),
+        )
+      },
     }),
     get_event: tool({
       description: 'Fetch a specific Google Calendar event by calendar ID and event ID.',
       inputSchema: getEventInputSchema,
-      execute: async ({ calendarId, eventId }) =>
-        executeLoggedTool('get_event', turnId, () =>
-          withSession(session, setNotice, 'Sign in with Google to inspect calendar events.', async (session) => {
-            const { getGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
-          const calendars = await getCalendars!()
-          const calendarName =
-            calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId
-          const event = await getGoogleCalendarEvent(
-            session.tokens.accessToken,
-            calendarId,
-            calendarName,
-            eventId,
-          )
+      outputSchema: getEventToolOutputSchema,
+      execute: async ({ calendarId, eventId }, options) => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('get_event', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google to inspect calendar events.',
+            async (session) => {
+              const { getGoogleCalendarEvent } = await import(
+                '@/lib/server/google-calendar'
+              )
+              const calendarName =
+                context.calendars.find((c) => c.id === calendarId)?.summary ?? calendarId
+              const event = await getGoogleCalendarEvent(
+                session.tokens.accessToken,
+                calendarId,
+                calendarName,
+                eventId,
+              )
 
-          return {
-            detail: `Loaded ${event.summary ?? 'the selected event'}.`,
-            event: {
-              attendees: event.attendees ?? [],
-              calendarId: event.calendarId,
-              calendarName: event.calendarName,
-              description: event.description ?? null,
-              end: event.end ?? null,
-              id: event.id,
-              location: event.location ?? null,
-              start: event.start ?? null,
-              summary: event.summary ?? '(untitled)',
+              return {
+                detail: `Loaded ${event.summary ?? 'the selected event'}.`,
+                event: {
+                  attendees: event.attendees ?? [],
+                  calendarId: event.calendarId,
+                  calendarName: event.calendarName,
+                  description: event.description ?? null,
+                  end: event.end ?? null,
+                  id: event.id,
+                  location: event.location ?? null,
+                  start: event.start ?? null,
+                  summary: event.summary ?? '(untitled)',
+                },
+                status: 'ok' as const,
+              }
             },
-          }
-          })),
+          ),
+        )
+      },
     }),
     check_availability: tool({
       description: 'Check Google Calendar availability for a given date/time window.',
       inputSchema: checkAvailabilityInputSchema,
-      execute: async ({ calendarIds, date, durationMinutes, endTime, startTime, timezone }) =>
-        executeLoggedTool('check_availability', turnId, () =>
-          withSession(session, setNotice, 'Sign in with Google to check calendar availability.', async (session) => {
-            const { queryFreeBusy } = await import('@/lib/server/google-calendar')
-          const calendars = await getCalendars!()
-          const targetCalendarIds =
-            calendarIds && calendarIds.length > 0
-              ? calendarIds
-              : calendars.slice(0, 5).map((calendar) => calendar.id)
-          const resolvedTimeZone = timezone ?? input.localTimeZone
-          const resolvedEndTime = endTime ?? deriveEndTime(startTime, durationMinutes ?? 60)
-          const timeMin = formatRfc3339InTimeZone(date, startTime, resolvedTimeZone)
-          const timeMax = formatRfc3339InTimeZone(date, resolvedEndTime, resolvedTimeZone)
-          const busy = await queryFreeBusy(
-            session.tokens.accessToken,
-            targetCalendarIds,
-            timeMin,
-            timeMax,
-          )
+      outputSchema: checkAvailabilityToolOutputSchema,
+      execute: async (
+        { calendarIds, date, durationMinutes, endTime, startTime, timezone },
+        options,
+      ) => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('check_availability', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google to check calendar availability.',
+            async (session) => {
+              const { queryFreeBusy } = await import('@/lib/server/google-calendar')
+              const targetCalendarIds =
+                calendarIds && calendarIds.length > 0
+                  ? calendarIds
+                  : context.calendars.slice(0, 5).map((c) => c.id)
+              const resolvedTimeZone = timezone ?? context.localTimeZone
+              const resolvedEndTime = endTime ?? deriveEndTime(startTime, durationMinutes ?? 60)
+              const timeMin = formatRfc3339InTimeZone(date, startTime, resolvedTimeZone)
+              const timeMax = formatRfc3339InTimeZone(date, resolvedEndTime, resolvedTimeZone)
+              const busy = await queryFreeBusy(
+                session.tokens.accessToken,
+                targetCalendarIds,
+                timeMin,
+                timeMax,
+              )
 
-          return {
-            calendars: targetCalendarIds.map((calendarId) => ({
-              busy: busy[calendarId]?.busy ?? [],
-              calendarId,
-              calendarName:
-                calendars.find((calendar) => calendar.id === calendarId)?.summary ?? calendarId,
-            })),
-            detail: `Checked availability across ${targetCalendarIds.length} calendar${targetCalendarIds.length === 1 ? '' : 's'} from ${startTime} to ${resolvedEndTime} on ${date}.`,
-            timeMax,
-            timeMin,
-            timezone: resolvedTimeZone,
-          }
-          })),
+              return {
+                calendars: targetCalendarIds.map((calId) => ({
+                  busy: busy[calId]?.busy ?? [],
+                  calendarId: calId,
+                  calendarName:
+                    context.calendars.find((c) => c.id === calId)?.summary ?? calId,
+                })),
+                detail: `Checked availability across ${targetCalendarIds.length} calendar${targetCalendarIds.length === 1 ? '' : 's'} from ${startTime} to ${resolvedEndTime} on ${date}.`,
+                status: 'ok' as const,
+                timeMax,
+                timeMin,
+                timezone: resolvedTimeZone,
+              }
+            },
+          ),
+        )
+      },
     }),
     create_event: tool({
-      description: 'Create a Google Calendar event from explicit event fields.',
+      description:
+        'Create a Google Calendar event. Provide title, date, startTime (or allDay), calendarId, and optionally attendees, location, duration, description, recurrence.',
       inputSchema: eventInputSchema,
-      execute: async (eventInput) =>
-        executeLoggedTool('create_event', turnId, () =>
-          withSession(session, setNotice, 'Sign in with Google before creating events.', async (session) => {
-            const normalized = await normalizeCreateRequest({
-            accessToken: session.tokens.accessToken,
-            eventInput,
-            localTimeZone: input.localTimeZone,
-            sourceInputs: input.sourceInputs,
-            userSub: session.profile.sub,
-          })
-          if (normalized.request == null) {
-            return { detail: normalized.detail }
-          }
+      needsApproval: writeNeedsApproval,
+      outputSchema: writeCalendarToolOutputSchema,
+      execute: async (eventInput, options): Promise<WriteToolResult> => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('create_event', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google before creating events.',
+            async (session) => {
+              const { validateRequiredFields } = await import('./chat-helpers')
+              const missing = validateRequiredFields(eventInput)
+              if (missing.length > 0) {
+                return {
+                  detail: `Missing required fields: ${missing.join(', ')}. Ask the user for these details.`,
+                  status: 'needs-input' as const,
+                }
+              }
 
-          const approvalBlock = ensureApprovalAllowed({
-            action: 'create',
-            executionMode,
-            latestUserText: input.latestUserText,
-            messages: input.messages,
-            summary: normalized.summary,
-          })
-          if (approvalBlock) {
-            return { detail: approvalBlock }
-          }
+              const request = buildWriteEventRequest(
+                eventInput as Record<string, unknown>,
+                context.localTimeZone,
+                context.sourceInputs,
+              )
 
-          return submitWriteRequest({
-            request: normalized.request,
-            session,
-            setNotice,
-          })
-          })),
+              return submitCreateEvent({ request, session })
+            },
+          ),
+        )
+      },
     }),
     update_event: tool({
-      description: 'Update an existing Google Calendar event. Provide the event id, calendar id, and changed fields.',
+      description:
+        'Update or reschedule an existing Google Calendar event. Provide calendarId, eventId, and the fields to change. Unchanged fields are preserved from the existing event.',
       inputSchema: updateEventInputSchema,
-      execute: async ({ calendarId, eventId, ...eventInput }) =>
-        executeUpdateOrReschedule('update_event', 'update', { calendarId, eventId, eventInput, executionMode, input, session, setNotice, turnId }),
-    }),
-    reschedule_event: tool({
-      description: 'Reschedule an existing Google Calendar event by changing its date and or time fields.',
-      inputSchema: updateEventInputSchema,
-      execute: async ({ calendarId, eventId, ...eventInput }) =>
-        executeUpdateOrReschedule('reschedule_event', 'reschedule', { calendarId, eventId, eventInput, executionMode, input, session, setNotice, turnId }),
+      needsApproval: writeNeedsApproval,
+      outputSchema: writeCalendarToolOutputSchema,
+      execute: async (
+        { calendarId, eventId, ...eventInput },
+        options,
+      ): Promise<WriteToolResult> => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('update_event', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google before updating events.',
+            async (session) => {
+              const { getGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
+              const calendarName =
+                context.calendars.find((c) => c.id === calendarId)?.summary ?? calendarId
+              const current = await getGoogleCalendarEvent(
+                session.tokens.accessToken,
+                calendarId,
+                calendarName,
+                eventId,
+              )
+
+              const isAllDay = eventInput.allDay ?? Boolean(current.start?.date && !current.start?.dateTime)
+              const merged = {
+                title: eventInput.title ?? current.summary ?? '',
+                date: eventInput.date ?? current.start?.date ?? current.start?.dateTime?.slice(0, 10) ?? '',
+                startTime: eventInput.startTime ?? current.start?.dateTime?.slice(11, 16) ?? null,
+                endTime: eventInput.endTime ?? current.end?.dateTime?.slice(11, 16) ?? null,
+                durationMinutes: eventInput.durationMinutes ?? getDurationMinutes(current) ?? null,
+                allDay: isAllDay,
+                timezone: eventInput.timezone ?? current.start?.timeZone ?? context.localTimeZone,
+                location: eventInput.location ?? current.location ?? null,
+                description: eventInput.description ?? current.description ?? null,
+                recurrenceRule: eventInput.recurrenceRule ?? null,
+                calendarId,
+                attendees: eventInput.attendees ?? (current.attendees ?? [])
+                  .filter((a): a is { email: string; displayName?: string } => Boolean(a.email))
+                  .map((a) => ({ email: a.email, name: a.displayName ?? a.email })),
+              }
+
+              const { validateRequiredFields } = await import('./chat-helpers')
+              const missing = validateRequiredFields(merged)
+              if (missing.length > 0) {
+                return {
+                  detail: `Missing required fields after merge: ${missing.join(', ')}.`,
+                  status: 'needs-input' as const,
+                }
+              }
+
+              const request = buildWriteEventRequest(
+                merged as Record<string, unknown>,
+                context.localTimeZone,
+                context.sourceInputs,
+              )
+
+              return submitUpdateEvent({ calendarId, eventId, request, session })
+            },
+          ),
+        )
+      },
     }),
     delete_event: tool({
       description: 'Delete a specific Google Calendar event by calendar id and event id.',
       inputSchema: deleteEventInputSchema,
-      execute: async ({ calendarId, eventId, title, when }) =>
-        executeLoggedTool('delete_event', turnId, () =>
-          withSession(session, setNotice, 'Sign in with Google before deleting events.', async (session) => {
-            const summary = summarizeDeleteAction({
-            title: title?.trim() || 'Untitled event',
-            when: when?.trim() || null,
-          })
-          const approvalBlock = ensureApprovalAllowed({
-            action: 'delete',
-            executionMode,
-            latestUserText: input.latestUserText,
-            messages: input.messages,
-            summary,
-          })
-          if (approvalBlock) {
-            return { detail: approvalBlock }
-          }
+      needsApproval: writeNeedsApproval,
+      outputSchema: writeCalendarToolOutputSchema,
+      execute: async ({ calendarId, eventId, title }, options): Promise<WriteToolResult> => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('delete_event', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in with Google before deleting events.',
+            async (session) => {
+              const { deleteGoogleCalendarEvent } = await import(
+                '@/lib/server/google-calendar'
+              )
+              const deletion = await deleteGoogleCalendarEvent(
+                session.tokens.accessToken,
+                calendarId,
+                eventId,
+              )
 
-          const { deleteGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
-          const deletion = await deleteGoogleCalendarEvent(
-            session.tokens.accessToken,
-            calendarId,
-            eventId,
-          )
-          const response = {
-            actionPerformed: deletion.actionPerformed,
-            calendarId: deletion.calendarId,
-            eventId: deletion.eventId,
-            factChangesApplied: {
-              created: [],
-              staled: [],
-              updated: [],
+              return {
+                actionPerformed: deletion.actionPerformed,
+                calendarId: deletion.calendarId,
+                detail: `Deleted ${title?.trim() || 'the selected event'} from Google Calendar.`,
+                eventId: deletion.eventId,
+                htmlLink: deletion.htmlLink,
+                sendUpdates: deletion.sendUpdates,
+                status: 'ok' as const,
+              }
             },
-            htmlLink: deletion.htmlLink,
-            sendUpdates: deletion.sendUpdates,
-          } satisfies SubmitEventResponse
-          setNotice({
-            kind: 'event-success',
-            response,
-          })
+          ),
+        )
+      },
+    }),
+    manage_facts: tool({
+      description:
+        'Add or remove a fact from your long-term memory. You decide what is worth remembering. ' +
+        'Facts persist across conversations and appear in your system context. ' +
+        'Proactively save useful information (names, emails, preferences, patterns). ' +
+        'Remove facts that are outdated or contradicted by new information.',
+      inputSchema: manageFactsInputSchema,
+      outputSchema: manageFactsToolOutputSchema,
+      execute: async ({ action, fact, id }, options) => {
+        const context = getCalendarAgentContext(options)
+        return executeLoggedTool('manage_facts', context.turnId, () =>
+          withSession(
+            context.session,
+            'Sign in to manage facts.',
+            async (session) => {
+              const { addFact, removeFact } = await import('@/lib/server/facts')
 
-          return {
-            detail: `Deleted ${title?.trim() || 'the selected event'} from Google Calendar.`,
-          }
-          })),
+              if (action === 'add') {
+                if (!fact) {
+                  return {
+                    detail: 'A fact string is required when adding.',
+                    status: 'ok' as const,
+                  }
+                }
+                const record = await addFact(session.profile.sub, fact)
+                return {
+                  detail: `Saved fact: "${fact}" (id: ${record.id})`,
+                  status: 'ok' as const,
+                }
+              }
+
+              if (!id) {
+                return {
+                  detail: 'A fact id is required when removing.',
+                  status: 'ok' as const,
+                }
+              }
+              const removed = await removeFact(session.profile.sub, id)
+              return {
+                detail: removed ? `Removed fact ${id}.` : `No fact found with id ${id}.`,
+                status: 'ok' as const,
+              }
+            },
+          ),
+        )
+      },
     }),
   }
+}
+
+function getCalendarAgentContext(options: ToolExecutionOptions): CalendarAgentContext {
+  return options.experimental_context as CalendarAgentContext
 }

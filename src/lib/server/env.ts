@@ -8,6 +8,9 @@ const serverEnvSchema = z.object({
   GOOGLE_REDIRECT_URI: z.string().url(),
   SESSION_SECRET: z.string().min(16),
   TOKEN_ENCRYPTION_SECRET: z.string().min(16),
+  CF_AIG_ACCOUNT_ID: z.string().min(1),
+  CF_AIG_GATEWAY: z.string().min(1),
+  CF_AIG_TOKEN: z.string().min(1),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
   APP_URL: z.string().url(),
@@ -19,6 +22,8 @@ const serverEnvSchema = z.object({
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>
 
+let cached: ServerEnv | null = null
+
 export function getServerEnv(): ServerEnv {
-  return serverEnvSchema.parse(workerEnv)
+  return (cached ??= serverEnvSchema.parse(workerEnv))
 }

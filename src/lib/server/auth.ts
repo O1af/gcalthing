@@ -151,24 +151,49 @@ export async function getSessionContext(): Promise<SessionContext | null> {
 
   const sessionValue = await env.AUTH_KV.get(sessionKey(sessionId))
   if (!sessionValue) {
+    clearSessionCookie()
     return null
   }
 
-  const session = JSON.parse(sessionValue) as StoredSession
+  let session: StoredSession
+  try {
+    session = JSON.parse(sessionValue) as StoredSession
+  } catch {
+    await clearSessionRecord(sessionId)
+    clearSessionCookie()
+    return null
+  }
+
   const [profile, tokens] = await Promise.all([
     getStoredProfile(session.userSub),
     getStoredTokens(session.userSub),
   ])
 
   if (!profile || !tokens) {
+    await clearSessionRecord(sessionId)
+    clearSessionCookie()
     return null
   }
 
-  const validTokens = await ensureFreshAccessToken(session.userSub, tokens)
+  let validTokens: StoredTokens
+  try {
+    validTokens = await ensureFreshAccessToken(session.userSub, tokens)
+  } catch {
+    await Promise.all([
+      clearSessionRecord(sessionId),
+      clearStoredCredentials(session.userSub),
+    ])
+    clearSessionCookie()
+    return null
+  }
 
-  await env.AUTH_KV.put(sessionKey(sessionId), JSON.stringify(session), {
-    expirationTtl: SESSION_TTL_SECONDS,
-  })
+  try {
+    await env.AUTH_KV.put(sessionKey(sessionId), JSON.stringify(session), {
+      expirationTtl: SESSION_TTL_SECONDS,
+    })
+  } catch {
+    // Keep the current request alive even if session TTL refresh fails.
+  }
 
   return {
     sessionId,
@@ -186,25 +211,13 @@ export async function requireSessionContext() {
 }
 
 export async function clearAuthSession() {
-  const env = getServerEnv()
   const sessionId = getCookie(SESSION_COOKIE)
   if (!sessionId) {
     return
   }
 
-  const sessionValue = await env.AUTH_KV.get(sessionKey(sessionId))
-  if (sessionValue) {
-    const session = JSON.parse(sessionValue) as StoredSession
-    await Promise.all([
-      env.AUTH_KV.delete(sessionKey(sessionId)),
-      env.AUTH_KV.delete(profileKey(session.userSub)),
-      env.AUTH_KV.delete(tokenKey(session.userSub)),
-    ])
-  }
-
-  deleteCookie(SESSION_COOKIE, {
-    path: '/',
-  })
+  await clearSessionRecord(sessionId)
+  clearSessionCookie()
 }
 
 export async function getViewer() {
@@ -370,6 +383,25 @@ async function getStoredTokens(userSub: string) {
   }
 
   return decryptJson<StoredTokens>(env.TOKEN_ENCRYPTION_SECRET, value)
+}
+
+async function clearStoredCredentials(userSub: string) {
+  const env = getServerEnv()
+  await Promise.all([
+    env.AUTH_KV.delete(profileKey(userSub)),
+    env.AUTH_KV.delete(tokenKey(userSub)),
+  ])
+}
+
+async function clearSessionRecord(sessionId: string) {
+  const env = getServerEnv()
+  await env.AUTH_KV.delete(sessionKey(sessionId))
+}
+
+function clearSessionCookie() {
+  deleteCookie(SESSION_COOKIE, {
+    path: '/',
+  })
 }
 
 function oauthStateKey(state: string) {

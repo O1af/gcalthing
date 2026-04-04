@@ -1,23 +1,23 @@
 'use client'
 
 import { Button } from '@/components/ui/button'
-import type { ChatNotice } from '@/lib/contracts'
+import type { WriteCalendarToolSuccess } from '@/lib/contracts'
 import { CheckCircle2, ExternalLink, LogIn } from 'lucide-react'
 
 export function EventSuccessCard(props: {
-  notice: Extract<ChatNotice, { kind: 'event-success' }>
+  result: WriteCalendarToolSuccess
 }): React.JSX.Element {
-  const { notice } = props
+  const { result } = props
   const title =
-    notice.response.actionPerformed === 'deleted'
+    result.actionPerformed === 'deleted'
       ? 'Event deleted'
-      : notice.response.actionPerformed === 'updated'
+      : result.actionPerformed === 'updated'
         ? 'Event updated'
         : 'Event created'
   const detail =
-    notice.response.actionPerformed === 'deleted'
-      ? `Removed from ${notice.response.calendarId}`
-      : `Written to ${notice.response.calendarId}`
+    result.actionPerformed === 'deleted'
+      ? `Removed from ${result.calendarId}`
+      : `Written to ${result.calendarId}`
 
   return (
     <div className="my-2 rounded-xl border border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/30">
@@ -29,9 +29,9 @@ export function EventSuccessCard(props: {
             <p className="mt-0.5 text-sm text-emerald-700 dark:text-emerald-300">{detail}</p>
           </div>
         </div>
-        {notice.response.htmlLink ? (
+        {result.htmlLink ? (
           <Button asChild className="h-7 gap-1.5 text-xs" size="sm" variant="outline">
-            <a href={notice.response.htmlLink} rel="noreferrer" target="_blank">
+            <a href={result.htmlLink} rel="noreferrer" target="_blank">
               Open <ExternalLink className="size-3" />
             </a>
           </Button>
@@ -42,14 +42,14 @@ export function EventSuccessCard(props: {
 }
 
 export function SignInRequiredCard(props: {
-  notice: Extract<ChatNotice, { kind: 'sign-in-required' }>
+  detail: string
 }): React.JSX.Element {
-  const { notice } = props
+  const { detail } = props
 
   return (
     <div className="my-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3">
       <p className="text-sm font-medium">Google sign-in needed</p>
-      <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">{notice.detail}</p>
+      <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">{detail}</p>
       <Button asChild className="mt-3 h-8 gap-1.5" size="sm">
         <a href="/auth/login?returnTo=/">
           <LogIn className="size-3.5" />

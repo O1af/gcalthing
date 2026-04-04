@@ -1,18 +1,14 @@
 import {
-  convertToModelMessages,
-  createUIMessageStream,
-  createUIMessageStreamResponse,
-  stepCountIs,
-  streamText,
+  consumeStream,
+  createAgentUIStreamResponse,
 } from "ai";
 import type { AppChatMessage } from "@/lib/chat-ui";
 import { getMessageText } from "@/lib/chat-ui";
-import type { ChatNotice, ExecutionMode, SourceInput } from "@/lib/contracts";
-import { buildChatSystemPrompt } from "@/lib/server/chat-system-prompt";
-import { getOpenAIModel } from "@/lib/server/ai-model";
+import type { ExecutionMode, SourceInput } from "@/lib/contracts";
+import { emptyFactsContext } from "@/lib/contracts";
 import { logDebug } from "@/lib/server/debug";
 import { getServerEnv } from "@/lib/server/env";
-import { buildTurnTools } from "./tool-definitions";
+import { buildCalendarAgentOptions, getCalendarAgents } from "./agent";
 import { collectConversationSourceInputs } from "./chat-helpers";
 
 export interface AssistantTurnInput {
@@ -33,84 +29,56 @@ export async function streamAssistantTurn(params: {
 }): Promise<Response> {
   const input = buildAssistantTurnInput(params);
   const env = getServerEnv();
-  const model = getOpenAIModel(env.OPENAI_MODEL);
   const { getSessionContext } = await import("@/lib/server/auth");
   const session = await getSessionContext();
   const turnId = crypto.randomUUID().slice(0, 8);
-  let latestNotice: ChatNotice | null = null;
+  const { approval, direct } = getCalendarAgents();
+
+  const { listWritableCalendars, loadNearTermEvents } = await import(
+    "@/lib/server/google-calendar"
+  );
+  const { loadFacts } = await import("@/lib/server/facts");
+
+  const calendars = session
+    ? await listWritableCalendars(session.tokens.accessToken)
+    : [];
+
+  const [facts, nearTermEvents] = session
+    ? await Promise.all([
+        loadFacts(session.profile.sub),
+        loadNearTermEvents(session.tokens.accessToken, calendars),
+      ])
+    : [emptyFactsContext, []];
 
   logDebug("ai:chat", "turn:start", {
+    calendarCount: calendars.length,
     executionMode: input.executionMode,
+    factCount: facts.length,
     messageCount: input.messages.length,
     model: env.OPENAI_MODEL,
+    nearTermEventCount: nearTermEvents.length,
     signedIn: Boolean(session),
     sourceInputCount: input.sourceInputs.length,
     turnId,
   });
 
-  const getCalendars = session
-    ? onceLazy(() =>
-        import("@/lib/server/google-calendar").then((m) =>
-          m.listWritableCalendars(session.tokens.accessToken),
-        ),
-      )
-    : null;
-
-  const tools = buildTurnTools({
-    executionMode: input.executionMode,
-    getCalendars,
-    input,
-    session,
-    setNotice: (notice) => {
-      latestNotice = notice;
-    },
-    turnId,
+  return createAgentUIStreamResponse({
+    abortSignal: params.abortSignal,
+    agent: input.executionMode === "approval-first" ? approval : direct,
+    consumeSseStream: consumeStream,
+    options: buildCalendarAgentOptions({
+      calendars,
+      executionMode: input.executionMode,
+      facts,
+      latestUserText: input.latestUserText,
+      localTimeZone: input.localTimeZone,
+      nearTermEvents,
+      session,
+      sourceInputs: input.sourceInputs,
+      turnId,
+    }),
+    uiMessages: params.messages as unknown[],
   });
-
-  const modelMessages = await convertToModelMessages(
-    params.messages.map(({ id: _id, ...message }) => message),
-  );
-
-  const stream = createUIMessageStream<AppChatMessage>({
-    originalMessages: params.messages,
-    execute: ({ writer }) => {
-      const result = streamText({
-        abortSignal: params.abortSignal,
-        messages: modelMessages,
-        model,
-        onFinish: () => {
-          if (latestNotice) {
-            writer.write({
-              data: latestNotice,
-              type: "data-chatNotice",
-            });
-          }
-        },
-        stopWhen: stepCountIs(6),
-        system: buildChatSystemPrompt({
-          executionMode: input.executionMode,
-          signedIn: Boolean(session),
-        }),
-        tools,
-      });
-
-      writer.merge(result.toUIMessageStream<AppChatMessage>({ sendReasoning: true }));
-    },
-    onFinish: ({ responseMessage }) => {
-      logDebug("ai:chat", "turn:done", {
-        noticeKind: latestNotice?.kind ?? "none",
-        responseTextLength: getMessageText(responseMessage).trim().length,
-        turnId,
-      });
-    },
-  });
-
-  return createUIMessageStreamResponse({ stream });
-}
-
-function onceLazy<T>(fn: () => Promise<T>): () => Promise<T> {
-  let cached: Promise<T> | null = null;
-  return () => (cached ??= fn());
 }
 
 function buildAssistantTurnInput(params: {

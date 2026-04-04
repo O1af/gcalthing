@@ -1,9 +1,0 @@
-export const SIMILARITY_LOOSE = 0.7
-export const SIMILARITY_MODERATE = 0.74
-export const SIMILARITY_STRICT = 0.8
-
-export const MATCH_LOOSE = 0.72
-export const MATCH_VERY_STRICT = 0.88
-
-export const CALENDAR_CONFIDENCE_THRESHOLD = 0.58
-export const CALENDAR_CONFIDENCE_GAP = 0.12
