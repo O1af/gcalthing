@@ -1,27 +1,27 @@
-'use client'
+"use client";
 
-import { DefaultChatTransport, type FileUIPart } from 'ai'
-import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport, type FileUIPart } from "ai";
+import { useChat } from "@ai-sdk/react";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
   ChainOfThoughtHeader,
   ChainOfThoughtStep,
-} from '@/components/ai-elements/chain-of-thought'
+} from "@/components/ai-elements/chain-of-thought";
 import {
   Attachment,
   AttachmentInfo,
   AttachmentPreview,
   AttachmentRemove,
   Attachments,
-} from '@/components/ai-elements/attachments'
+} from "@/components/ai-elements/attachments";
 import {
   ConversationBody,
   ConversationEmptyState,
   ConversationRoot,
   ConversationScrollButton,
-} from '@/components/ai-elements/conversation'
-import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
+} from "@/components/ai-elements/conversation";
+import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import {
   PromptInput,
   PromptInputBody,
@@ -32,31 +32,27 @@ import {
   PromptInputTools,
   type PromptInputMessage,
   usePromptInputAttachments,
-} from '@/components/ai-elements/prompt-input'
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from '@/components/ai-elements/reasoning'
-import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion'
-import { EventSuccessCard, SignInRequiredCard } from '@/components/app/chat-notice-card'
-import { Badge } from '@/components/ui/badge'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
+} from "@/components/ai-elements/prompt-input";
+import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
+import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
+import { EventSuccessCard, SignInRequiredCard } from "@/components/app/chat-notice-card";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,8 +60,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Label } from '@/components/ui/label'
+} from "@/components/ui/dropdown-menu";
+import { Label } from "@/components/ui/label";
 import {
   Sidebar,
   SidebarContent,
@@ -83,9 +79,9 @@ import {
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,
-} from '@/components/ui/sidebar'
-import type { AppChatMessage } from '@/lib/chat-ui'
-import { cn } from '@/lib/utils'
+} from "@/components/ui/sidebar";
+import type { AppChatMessage } from "@/lib/chat-ui";
+import { cn } from "@/lib/utils";
 import {
   getGoogleCalendarToolLabel,
   getGoogleCalendarSignInDetail,
@@ -97,10 +93,8 @@ import {
   getMessageText,
   isMessageReasoningStreaming,
   type GoogleCalendarToolUIPart,
-} from '@/lib/chat-ui'
-import {
-  executionModeSchema, type ExecutionMode
-} from '@/lib/contracts'
+} from "@/lib/chat-ui";
+import { executionModeSchema, type ExecutionMode } from "@/lib/contracts";
 import {
   CalendarDays,
   ChevronsUpDown,
@@ -115,127 +109,135 @@ import {
   Settings,
   SquarePen,
   Sun,
-} from 'lucide-react'
-import { useStickToBottom } from 'use-stick-to-bottom'
-import { useCallback, useEffect, useRef, useState } from 'react'
+} from "lucide-react";
+import { useStickToBottom } from "use-stick-to-bottom";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-type WorkspaceChatStatus = ReturnType<typeof useWorkspaceChat>['status']
+type WorkspaceChatStatus = ReturnType<typeof useWorkspaceChat>["status"];
 
-const EXECUTION_MODE_KEY = 'gcalthing-execution-mode'
+const EXECUTION_MODE_KEY = "gcalthing-execution-mode";
 interface WorkspaceShellProps {
   viewer: {
-    email: string
-    name: string
-    picture: string | null
-    sub: string
-  } | null
+    email: string;
+    name: string;
+    picture: string | null;
+    sub: string;
+  } | null;
 }
 
 export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
-  const [executionMode, setExecutionMode] = useExecutionMode()
+  const [executionMode, setExecutionMode] = useExecutionMode();
   const { addToolApprovalResponse, messages, sendMessage, setMessages, status, stop } =
-    useWorkspaceChat(executionMode)
-  const [openChainMessageId, setOpenChainMessageId] = useState<string | null>(null)
+    useWorkspaceChat(executionMode);
+  const [openChainMessageId, setOpenChainMessageId] = useState<string | null>(null);
   const [manuallyClosedChainMessageIds, setManuallyClosedChainMessageIds] = useState<
     Record<string, true>
-  >({})
+  >({});
   const conversation = useStickToBottom({
-    initial: 'smooth',
-    resize: 'smooth',
-  })
+    initial: "smooth",
+    resize: "smooth",
+  });
 
-  const isResponding = status === 'submitted' || status === 'streaming'
-  const lastMessage = messages.at(-1)
+  const isResponding = status === "submitted" || status === "streaming";
+  const lastMessage = messages.at(-1);
 
   const handleClearChat = useCallback(() => {
-    stop()
-    setMessages([])
-    setOpenChainMessageId(null)
-    setManuallyClosedChainMessageIds({})
-  }, [stop, setMessages])
+    stop();
+    setMessages([]);
+    setOpenChainMessageId(null);
+    setManuallyClosedChainMessageIds({});
+  }, [stop, setMessages]);
 
-  const handlePromptSubmit = useCallback(async (message: PromptInputMessage) => {
-    if (!message.text.trim() && message.files.length === 0) {
-      return
-    }
+  const handlePromptSubmit = useCallback(
+    async (message: PromptInputMessage) => {
+      if (!message.text.trim() && message.files.length === 0) {
+        return;
+      }
 
-    void Promise.resolve(conversation.scrollToBottom('smooth'))
-    await sendMessage({
-      files: message.files,
-      text: message.text,
-    })
-  }, [conversation, sendMessage])
+      void Promise.resolve(conversation.scrollToBottom("smooth"));
+      await sendMessage({
+        files: message.files,
+        text: message.text,
+      });
+    },
+    [conversation, sendMessage],
+  );
 
-  const handleSuggestionClick = useCallback((text: string) => {
-    void Promise.resolve(conversation.scrollToBottom('smooth'))
-    void sendMessage({ files: [], text })
-  }, [conversation, sendMessage])
+  const handleSuggestionClick = useCallback(
+    (text: string) => {
+      void Promise.resolve(conversation.scrollToBottom("smooth"));
+      void sendMessage({ files: [], text });
+    },
+    [conversation, sendMessage],
+  );
 
   const handleToolChainOpenChange = useCallback((messageId: string, open: boolean) => {
     if (open) {
-      setOpenChainMessageId(messageId)
+      setOpenChainMessageId(messageId);
       setManuallyClosedChainMessageIds((current) => {
         if (!(messageId in current)) {
-          return current
+          return current;
         }
 
-        const next = { ...current }
-        delete next[messageId]
-        return next
-      })
-      return
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+      return;
     }
 
-    setOpenChainMessageId((current) => (current === messageId ? null : current))
+    setOpenChainMessageId((current) => (current === messageId ? null : current));
     setManuallyClosedChainMessageIds((current) => ({
       ...current,
       [messageId]: true,
-    }))
-  }, [])
+    }));
+  }, []);
 
   useEffect(() => {
     if (
       isResponding &&
-      lastMessage?.role === 'assistant' &&
+      lastMessage?.role === "assistant" &&
       !manuallyClosedChainMessageIds[lastMessage.id]
     ) {
-      setOpenChainMessageId(lastMessage.id)
-      return
+      setOpenChainMessageId(lastMessage.id);
+      return;
     }
 
-    if (isResponding && lastMessage?.role === 'user') {
-      setOpenChainMessageId(null)
+    if (isResponding && lastMessage?.role === "user") {
+      setOpenChainMessageId(null);
     }
-  }, [isResponding, lastMessage, manuallyClosedChainMessageIds])
+  }, [isResponding, lastMessage, manuallyClosedChainMessageIds]);
 
-  const hasContent = messages.length > 0
-  const shouldShowPendingAssistantMessage =
-    isResponding && lastMessage?.role !== 'assistant'
+  const hasContent = messages.length > 0;
+  const shouldShowPendingAssistantMessage = isResponding && lastMessage?.role !== "assistant";
 
-  const renderMessageRow = useCallback((message: AppChatMessage, index: number) => (
-    <div data-message-id={message.id} data-slot="chat-message-row" key={message.id}>
-      <ChatMessageRow
-        addToolApprovalResponse={addToolApprovalResponse}
-        isChainOpen={openChainMessageId === message.id}
-        isResponding={isResponding}
-        message={message}
-        onToolChainOpenChange={handleToolChainOpenChange}
-        showStreamingIndicator={index === messages.length - 1}
-      />
-    </div>
-  ), [
-    addToolApprovalResponse,
-    handleToolChainOpenChange,
-    isResponding,
-    messages.length,
-    openChainMessageId,
-  ])
+  const renderMessageRow = useCallback(
+    (message: AppChatMessage, index: number) => (
+      <div data-message-id={message.id} data-slot="chat-message-row" key={message.id}>
+        <ChatMessageRow
+          addToolApprovalResponse={addToolApprovalResponse}
+          isChainOpen={openChainMessageId === message.id}
+          isResponding={isResponding}
+          message={message}
+          onToolChainOpenChange={handleToolChainOpenChange}
+          showStreamingIndicator={index === messages.length - 1}
+        />
+      </div>
+    ),
+    [
+      addToolApprovalResponse,
+      handleToolChainOpenChange,
+      isResponding,
+      messages.length,
+      openChainMessageId,
+    ],
+  );
 
   return (
     <SidebarProvider
       style={
         {
-          '--sidebar-width': '14.5rem',
+          "--sidebar-width": "14.5rem",
         } as React.CSSProperties
       }
     >
@@ -257,11 +259,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
         >
           <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <SidebarTrigger className="size-8 rounded-lg md:hidden" />
-            <TopAuthControl
-              hasContent={hasContent}
-              onClearChat={handleClearChat}
-              viewer={viewer}
-            />
+            <TopAuthControl hasContent={hasContent} onClearChat={handleClearChat} viewer={viewer} />
           </header>
 
           <main
@@ -288,9 +286,7 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
                 <>
                   <ConversationBody className="flex-1 py-6 pb-28">
                     {messages.map(renderMessageRow)}
-                    {shouldShowPendingAssistantMessage ? (
-                      <PendingAssistantMessage />
-                    ) : null}
+                    {shouldShowPendingAssistantMessage ? <PendingAssistantMessage /> : null}
                   </ConversationBody>
                   <ConversationScrollButton containerClassName="bottom-24 z-20" />
                 </>
@@ -311,53 +307,53 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
         </div>
       </SidebarInset>
     </SidebarProvider>
-  )
+  );
 }
 
 function readStoredExecutionMode(): ExecutionMode {
   try {
-    const stored = window.localStorage.getItem(EXECUTION_MODE_KEY)
-    const parsed = executionModeSchema.safeParse(stored)
-    if (parsed.success) return parsed.data
+    const stored = window.localStorage.getItem(EXECUTION_MODE_KEY);
+    const parsed = executionModeSchema.safeParse(stored);
+    if (parsed.success) return parsed.data;
   } catch {
     // Ignore stale local storage.
   }
-  return 'approval-first'
+  return "approval-first";
 }
 
 function useExecutionMode(): [ExecutionMode, (nextMode: string) => void] {
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>(readStoredExecutionMode)
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(readStoredExecutionMode);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(EXECUTION_MODE_KEY, executionMode)
+      window.localStorage.setItem(EXECUTION_MODE_KEY, executionMode);
     } catch {
       // Ignore local storage write failures.
     }
-  }, [executionMode])
+  }, [executionMode]);
 
   const handleExecutionModeChange = useCallback((nextMode: string) => {
-    const parsed = executionModeSchema.safeParse(nextMode)
+    const parsed = executionModeSchema.safeParse(nextMode);
     if (parsed.success) {
-      setExecutionMode(parsed.data)
+      setExecutionMode(parsed.data);
     }
-  }, [])
+  }, []);
 
-  return [executionMode, handleExecutionModeChange]
+  return [executionMode, handleExecutionModeChange];
 }
 
 function useWorkspaceChat(executionMode: ExecutionMode) {
-  const executionModeRef = useRef(executionMode)
-  const localTimeZoneRef = useRef(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-  const transportRef = useRef<DefaultChatTransport<AppChatMessage> | null>(null)
+  const executionModeRef = useRef(executionMode);
+  const localTimeZoneRef = useRef(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  const transportRef = useRef<DefaultChatTransport<AppChatMessage> | null>(null);
 
   useEffect(() => {
-    executionModeRef.current = executionMode
-  }, [executionMode])
+    executionModeRef.current = executionMode;
+  }, [executionMode]);
 
   if (!transportRef.current) {
     transportRef.current = new DefaultChatTransport<AppChatMessage>({
-      api: '/api/chat',
+      api: "/api/chat",
       prepareSendMessagesRequest: ({ messages }) => ({
         body: {
           executionMode: executionModeRef.current,
@@ -365,25 +361,25 @@ function useWorkspaceChat(executionMode: ExecutionMode) {
           messages,
         },
       }),
-    })
+    });
   }
 
   return useChat<AppChatMessage>({
-    id: 'workspace-chat',
+    id: "workspace-chat",
     transport: transportRef.current,
-  })
+  });
 }
 
 function ChatMessageRow(props: {
   addToolApprovalResponse: (response: {
-    approved: boolean
-    id: string
-  }) => void | PromiseLike<void>
-  isChainOpen: boolean
-  isResponding: boolean
-  message: AppChatMessage
-  onToolChainOpenChange: (messageId: string, open: boolean) => void
-  showStreamingIndicator: boolean
+    approved: boolean;
+    id: string;
+  }) => void | PromiseLike<void>;
+  isChainOpen: boolean;
+  isResponding: boolean;
+  message: AppChatMessage;
+  onToolChainOpenChange: (messageId: string, open: boolean) => void;
+  showStreamingIndicator: boolean;
 }): React.JSX.Element {
   const {
     addToolApprovalResponse,
@@ -392,33 +388,39 @@ function ChatMessageRow(props: {
     message,
     onToolChainOpenChange,
     showStreamingIndicator,
-  } = props
-  const messageFiles = getMessageFiles(message)
-  const messageReasoning = getMessageReasoningText(message)
-  const messageText = getMessageText(message)
-  const toolParts = getMessageGoogleCalendarToolParts(message)
-  let signInDetail: string | null = null
-  let successResult: ReturnType<typeof getGoogleCalendarWriteSuccess> = null
-  const approvalRequestedParts: Extract<GoogleCalendarToolUIPart, { state: 'approval-requested' }>[] = []
+  } = props;
+  const messageFiles = getMessageFiles(message);
+  const messageReasoning = getMessageReasoningText(message);
+  const messageText = getMessageText(message);
+  const toolParts = getMessageGoogleCalendarToolParts(message);
+  let signInDetail: string | null = null;
+  let successResult: ReturnType<typeof getGoogleCalendarWriteSuccess> = null;
+  const approvalRequestedParts: Extract<
+    GoogleCalendarToolUIPart,
+    { state: "approval-requested" }
+  >[] = [];
   for (const part of toolParts) {
-    signInDetail ??= getGoogleCalendarSignInDetail(part)
-    successResult ??= getGoogleCalendarWriteSuccess(part)
-    if (part.state === 'approval-requested') approvalRequestedParts.push(part)
+    signInDetail ??= getGoogleCalendarSignInDetail(part);
+    successResult ??= getGoogleCalendarWriteSuccess(part);
+    if (part.state === "approval-requested") approvalRequestedParts.push(part);
   }
 
-  if (message.role === 'user') {
+  if (message.role === "user") {
     return (
       <Message from="user">
         <MessageContent>
-          {messageText ? <p className="whitespace-pre-wrap leading-relaxed">{messageText}</p> : null}
+          {messageText ? (
+            <p className="whitespace-pre-wrap leading-relaxed">{messageText}</p>
+          ) : null}
           {messageFiles.length > 0 ? <ChatAttachments files={messageFiles} /> : null}
         </MessageContent>
       </Message>
-    )
+    );
   }
 
   const showReasoning =
-    messageReasoning.length > 0 || (showStreamingIndicator && isResponding && toolParts.length === 0)
+    messageReasoning.length > 0 ||
+    (showStreamingIndicator && isResponding && toolParts.length === 0);
 
   return (
     <div className="flex w-full flex-col gap-3">
@@ -432,14 +434,11 @@ function ChatMessageRow(props: {
       {showReasoning ? (
         <Reasoning
           isStreaming={
-            showStreamingIndicator &&
-            (isResponding || isMessageReasoningStreaming(message))
+            showStreamingIndicator && (isResponding || isMessageReasoningStreaming(message))
           }
         >
           <ReasoningTrigger />
-          {messageReasoning ? (
-            <ReasoningContent>{messageReasoning}</ReasoningContent>
-          ) : null}
+          {messageReasoning ? <ReasoningContent>{messageReasoning}</ReasoningContent> : null}
         </Reasoning>
       ) : null}
       {messageText ? <MessageResponse className="text-sm">{messageText}</MessageResponse> : null}
@@ -458,7 +457,7 @@ function ChatMessageRow(props: {
       {successResult ? <EventSuccessCard result={successResult} /> : null}
       {signInDetail ? <SignInRequiredCard detail={signInDetail} /> : null}
     </div>
-  )
+  );
 }
 
 function PendingAssistantMessage(): React.JSX.Element {
@@ -468,16 +467,16 @@ function PendingAssistantMessage(): React.JSX.Element {
         <ReasoningTrigger />
       </Reasoning>
     </div>
-  )
+  );
 }
 
 function CalendarToolChain(props: {
-  isOpen: boolean
-  onOpenChange: (open: boolean) => void
-  toolParts: GoogleCalendarToolUIPart[]
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  toolParts: GoogleCalendarToolUIPart[];
 }): React.JSX.Element {
-  const { isOpen, onOpenChange, toolParts } = props
-  const hasActiveTool = toolParts.some(isToolPartActive)
+  const { isOpen, onOpenChange, toolParts } = props;
+  const hasActiveTool = toolParts.some(isToolPartActive);
 
   return (
     <ChainOfThought onOpenChange={onOpenChange} open={isOpen}>
@@ -505,49 +504,47 @@ function CalendarToolChain(props: {
         ))}
       </ChainOfThoughtContent>
     </ChainOfThought>
-  )
+  );
 }
 
 function isToolPartActive(toolPart: GoogleCalendarToolUIPart): boolean {
   return (
-    toolPart.state === 'input-available' ||
-    toolPart.state === 'approval-requested' ||
-    toolPart.state === 'approval-responded'
-  )
+    toolPart.state === "input-available" ||
+    toolPart.state === "approval-requested" ||
+    toolPart.state === "approval-responded"
+  );
 }
 
-function getToolStepStatus(
-  toolPart: GoogleCalendarToolUIPart,
-): 'complete' | 'active' | 'pending' {
-  if (toolPart.state === 'input-streaming') {
-    return 'pending'
+function getToolStepStatus(toolPart: GoogleCalendarToolUIPart): "complete" | "active" | "pending" {
+  if (toolPart.state === "input-streaming") {
+    return "pending";
   }
 
   if (isToolPartActive(toolPart)) {
-    return 'active'
+    return "active";
   }
 
-  return 'complete'
+  return "complete";
 }
 
 function ToolApprovalCard(props: {
-  onRespond: (approved: boolean) => void | PromiseLike<void>
-  toolPart: Extract<GoogleCalendarToolUIPart, { state: 'approval-requested' }>
+  onRespond: (approved: boolean) => void | PromiseLike<void>;
+  toolPart: Extract<GoogleCalendarToolUIPart, { state: "approval-requested" }>;
 }): React.JSX.Element {
-  const { onRespond, toolPart } = props
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const { onRespond, toolPart } = props;
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleResponse = useCallback(
     async (approved: boolean) => {
-      setIsSubmitting(true)
+      setIsSubmitting(true);
       try {
-        await onRespond(approved)
+        await onRespond(approved);
       } finally {
-        setIsSubmitting(false)
+        setIsSubmitting(false);
       }
     },
     [onRespond],
-  )
+  );
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3">
@@ -569,44 +566,41 @@ function ToolApprovalCard(props: {
         </Button>
       </div>
     </div>
-  )
+  );
 }
 
-
 function ComposerAttachments(): React.JSX.Element | null {
-  const { files, remove } = usePromptInputAttachments()
+  const { files, remove } = usePromptInputAttachments();
   if (files.length === 0) {
-    return null
+    return null;
   }
 
-  return <ChatAttachments files={files} onRemove={remove} />
+  return <ChatAttachments files={files} onRemove={remove} />;
 }
 
 function ComposerAttachButton(): React.JSX.Element {
-  const { fileInputId } = usePromptInputAttachments()
+  const { fileInputId } = usePromptInputAttachments();
 
   return (
-    <label htmlFor={fileInputId} className="inline-flex size-8 cursor-pointer items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground focus-within:ring-2 focus-within:ring-ring">
+    <label
+      htmlFor={fileInputId}
+      className="inline-flex size-8 cursor-pointer items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground focus-within:ring-2 focus-within:ring-ring"
+    >
       <Paperclip className="size-4" />
       <span className="sr-only">Attach file</span>
     </label>
-  )
+  );
 }
 
 function WorkspaceSidebar(props: {
-  executionMode: ExecutionMode
-  onClearChat: () => void
-  onExecutionModeChange: (value: string) => void
-  viewer: WorkspaceShellProps['viewer']
+  executionMode: ExecutionMode;
+  onClearChat: () => void;
+  onExecutionModeChange: (value: string) => void;
+  viewer: WorkspaceShellProps["viewer"];
 }): React.JSX.Element {
-  const {
-    executionMode,
-    onClearChat,
-    onExecutionModeChange,
-    viewer,
-  } = props
-  const { toggleSidebar } = useSidebar()
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { executionMode, onClearChat, onExecutionModeChange, viewer } = props;
+  const { toggleSidebar } = useSidebar();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <>
@@ -703,17 +697,17 @@ function WorkspaceSidebar(props: {
         viewer={viewer}
       />
     </>
-  )
+  );
 }
 
 function NavUser(props: {
-  executionMode: ExecutionMode
-  onExecutionModeChange: (value: string) => void
-  onOpenSettings: () => void
-  viewer: NonNullable<WorkspaceShellProps['viewer']>
+  executionMode: ExecutionMode;
+  onExecutionModeChange: (value: string) => void;
+  onOpenSettings: () => void;
+  viewer: NonNullable<WorkspaceShellProps["viewer"]>;
 }): React.JSX.Element {
-  const { onOpenSettings, viewer } = props
-  const { isMobile } = useSidebar()
+  const { onOpenSettings, viewer } = props;
+  const { isMobile } = useSidebar();
 
   return (
     <SidebarMenu>
@@ -734,7 +728,7 @@ function NavUser(props: {
           </DropdownMenuTrigger>
           <DropdownMenuContent
             className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
-            side={isMobile ? 'bottom' : 'right'}
+            side={isMobile ? "bottom" : "right"}
             align="end"
             sideOffset={4}
           >
@@ -763,79 +757,85 @@ function NavUser(props: {
         </DropdownMenu>
       </SidebarMenuItem>
     </SidebarMenu>
-  )
+  );
 }
 
-function ViewerAvatar({ viewer, className }: { viewer: { name: string; picture: string | null }; className?: string }) {
+function ViewerAvatar({
+  viewer,
+  className,
+}: {
+  viewer: { name: string; picture: string | null };
+  className?: string;
+}) {
   const initials = viewer.name
-    .split(' ')
+    .split(" ")
     .map((part) => part[0])
-    .join('')
-    .slice(0, 2)
+    .join("")
+    .slice(0, 2);
 
   return (
-    <Avatar className={cn('h-8 w-8 rounded-lg', className)}>
+    <Avatar className={cn("h-8 w-8 rounded-lg", className)}>
       <AvatarImage alt={viewer.name} src={viewer.picture ?? undefined} />
       <AvatarFallback className="rounded-lg text-xs">{initials}</AvatarFallback>
     </Avatar>
-  )
+  );
 }
 
 function getExecutionModeLabel(executionMode: ExecutionMode): string {
-  if (executionMode === 'direct-execution') {
-    return 'Direct execution'
+  if (executionMode === "direct-execution") {
+    return "Direct execution";
   }
 
-  return 'Approval first'
+  return "Approval first";
 }
 
-type Theme = 'light' | 'dark' | 'auto'
+type Theme = "light" | "dark" | "auto";
 
 function readStoredTheme(): Theme {
   try {
-    const stored = window.localStorage.getItem('theme')
-    if (stored === 'light' || stored === 'dark' || stored === 'auto') return stored
+    const stored = window.localStorage.getItem("theme");
+    if (stored === "light" || stored === "dark" || stored === "auto") return stored;
   } catch {
     // ignore
   }
-  return 'auto'
+  return "auto";
 }
 
 function useTheme(): [Theme, (next: Theme) => void] {
-  const [theme, setThemeState] = useState<Theme>(readStoredTheme)
+  const [theme, setThemeState] = useState<Theme>(readStoredTheme);
 
   const setTheme = useCallback((next: Theme) => {
-    setThemeState(next)
+    setThemeState(next);
     try {
-      window.localStorage.setItem('theme', next)
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      const resolved = next === 'auto' ? (prefersDark ? 'dark' : 'light') : next
-      const root = document.documentElement
-      root.classList.remove('light', 'dark')
-      root.classList.add(resolved)
-      root.style.colorScheme = resolved
-      if (next === 'auto') {
-        root.removeAttribute('data-theme')
+      window.localStorage.setItem("theme", next);
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const resolved = next === "auto" ? (prefersDark ? "dark" : "light") : next;
+      const root = document.documentElement;
+      root.classList.remove("light", "dark");
+      root.classList.add(resolved);
+      root.style.colorScheme = resolved;
+      if (next === "auto") {
+        root.removeAttribute("data-theme");
       } else {
-        root.setAttribute('data-theme', next)
+        root.setAttribute("data-theme", next);
       }
     } catch {
       // ignore
     }
-  }, [])
+  }, []);
 
-  return [theme, setTheme]
+  return [theme, setTheme];
 }
 
 function SettingsDialog(props: {
-  executionMode: ExecutionMode
-  onExecutionModeChange: (value: string) => void
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  viewer: WorkspaceShellProps['viewer']
+  executionMode: ExecutionMode;
+  onExecutionModeChange: (value: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  viewer: WorkspaceShellProps["viewer"];
 }): React.JSX.Element {
-  const { executionMode, onExecutionModeChange, open, onOpenChange, viewer } = props
-  const [theme, setTheme] = useTheme()
+  const { executionMode, onExecutionModeChange, open, onOpenChange, viewer } = props;
+  const [theme, setTheme] = useTheme();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -850,27 +850,27 @@ function SettingsDialog(props: {
             <div className="grid grid-cols-3 gap-2">
               <Button
                 className="gap-1.5"
-                onClick={() => setTheme('light')}
+                onClick={() => setTheme("light")}
                 size="sm"
-                variant={theme === 'light' ? 'default' : 'outline'}
+                variant={theme === "light" ? "default" : "outline"}
               >
                 <Sun className="size-3.5" />
                 Light
               </Button>
               <Button
                 className="gap-1.5"
-                onClick={() => setTheme('dark')}
+                onClick={() => setTheme("dark")}
                 size="sm"
-                variant={theme === 'dark' ? 'default' : 'outline'}
+                variant={theme === "dark" ? "default" : "outline"}
               >
                 <Moon className="size-3.5" />
                 Dark
               </Button>
               <Button
                 className="gap-1.5"
-                onClick={() => setTheme('auto')}
+                onClick={() => setTheme("auto")}
                 size="sm"
-                variant={theme === 'auto' ? 'default' : 'outline'}
+                variant={theme === "auto" ? "default" : "outline"}
               >
                 <Monitor className="size-3.5" />
                 Auto
@@ -909,25 +909,20 @@ function SettingsDialog(props: {
         </div>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 function TopAuthControl(props: {
-  hasContent: boolean
-  onClearChat: () => void
-  viewer: WorkspaceShellProps['viewer']
+  hasContent: boolean;
+  onClearChat: () => void;
+  viewer: WorkspaceShellProps["viewer"];
 }): React.JSX.Element {
-  const { hasContent, onClearChat, viewer } = props
+  const { hasContent, onClearChat, viewer } = props;
 
   return (
     <div className="ml-auto flex items-center gap-2" data-slot="workspace-top-auth">
       {hasContent ? (
-        <Button
-          className="size-8 rounded-lg"
-          onClick={onClearChat}
-          size="icon"
-          variant="ghost"
-        >
+        <Button className="size-8 rounded-lg" onClick={onClearChat} size="icon" variant="ghost">
           <SquarePen className="size-4" />
           <span className="sr-only">New chat</span>
         </Button>
@@ -938,19 +933,19 @@ function TopAuthControl(props: {
         </Button>
       ) : null}
     </div>
-  )
+  );
 }
 
 function ChatAttachments(props: {
-  files: Array<FileUIPart | (FileUIPart & { id: string })>
-  onRemove?: (id: string) => void
+  files: Array<FileUIPart | (FileUIPart & { id: string })>;
+  onRemove?: (id: string) => void;
 }): React.JSX.Element {
-  const { files, onRemove } = props
-  const variant = onRemove ? 'grid' : 'list'
+  const { files, onRemove } = props;
+  const variant = onRemove ? "grid" : "list";
   const attachments = files.map((file, index) => ({
     ...file,
-    id: 'id' in file ? file.id : `${file.url}:${index}`,
-  }))
+    id: "id" in file ? file.id : `${file.url}:${index}`,
+  }));
 
   return (
     <Attachments className="ml-0 w-full justify-start" variant={variant}>
@@ -966,17 +961,17 @@ function ChatAttachments(props: {
         </Attachment>
       ))}
     </Attachments>
-  )
+  );
 }
 
 function EmptyWorkspaceState(props: {
-  onPromptSubmit: (message: PromptInputMessage) => Promise<void>
-  onSuggestionClick: (text: string) => void
-  status: WorkspaceChatStatus
-  stop: () => void
-  viewer: WorkspaceShellProps['viewer']
+  onPromptSubmit: (message: PromptInputMessage) => Promise<void>;
+  onSuggestionClick: (text: string) => void;
+  status: WorkspaceChatStatus;
+  stop: () => void;
+  viewer: WorkspaceShellProps["viewer"];
 }): React.JSX.Element {
-  const { onPromptSubmit, onSuggestionClick, status, stop, viewer } = props
+  const { onPromptSubmit, onSuggestionClick, status, stop, viewer } = props;
 
   return (
     <div className="relative flex w-full flex-col items-center gap-6 px-4 text-center">
@@ -986,50 +981,45 @@ function EmptyWorkspaceState(props: {
         What are you working on?
       </h1>
 
-      <WorkspaceComposer
-        onSubmit={onPromptSubmit}
-        status={status}
-        stop={stop}
-        variant="center"
-      />
+      <WorkspaceComposer onSubmit={onPromptSubmit} status={status} stop={stop} variant="center" />
 
       <Suggestions className="max-w-xl justify-center">
         <Suggestion onClick={onSuggestionClick} suggestion="What's on my calendar today?" />
         <Suggestion onClick={onSuggestionClick} suggestion="Am I free tomorrow afternoon?" />
-        <Suggestion onClick={onSuggestionClick} suggestion="Schedule a meeting for\u2026" />
+        <Suggestion onClick={onSuggestionClick} suggestion="Schedule a meeting for me" />
       </Suggestions>
 
       <div className="w-full max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 px-4 py-4 text-left backdrop-blur">
         <div className="space-y-1">
           <p className="text-sm font-medium">
-            {viewer ? `Signed in as ${viewer.email}` : 'Sign in for live calendar access'}
+            {viewer ? `Signed in as ${viewer.email}` : "Sign in for live calendar access"}
           </p>
           <p className="text-sm leading-relaxed text-[var(--muted-foreground)]">
             {viewer
-              ? 'Search calendars, inspect events, check availability, and make changes without leaving the chat.'
-              : 'Without Google sign-in the assistant can still discuss plans, but calendar reads and writes stay unavailable. Use the left sidebar or the top-right button to connect Google Calendar.'}
+              ? "Search calendars, inspect events, check availability, and make changes without leaving the chat."
+              : "Without Google sign-in the assistant can still discuss plans, but calendar reads and writes stay unavailable. Use the left sidebar or the top-right button to connect Google Calendar."}
           </p>
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function WorkspaceComposer(props: {
-  onSubmit: (message: PromptInputMessage) => Promise<void>
-  status: WorkspaceChatStatus
-  stop: () => void
-  variant: 'center' | 'dock'
+  onSubmit: (message: PromptInputMessage) => Promise<void>;
+  status: WorkspaceChatStatus;
+  stop: () => void;
+  variant: "center" | "dock";
 }): React.JSX.Element {
-  const { onSubmit, status, stop, variant } = props
+  const { onSubmit, status, stop, variant } = props;
 
   return (
     <PromptInput
-      canSubmit={status !== 'submitted' && status !== 'streaming'}
+      canSubmit={status !== "submitted" && status !== "streaming"}
       className={
-        variant === 'center'
-          ? 'mx-auto w-full max-w-xl [&_[data-slot=input-group]]:rounded-[1.75rem] [&_[data-slot=input-group]]:border-[var(--border)] [&_[data-slot=input-group]]:bg-[var(--card)]/92 [&_[data-slot=input-group]]:shadow-sm [&_[data-slot=input-group]]:backdrop-blur'
-          : 'mx-auto w-full max-w-2xl [&_[data-slot=input-group]]:rounded-[1.4rem] [&_[data-slot=input-group]]:border-[var(--border)] [&_[data-slot=input-group]]:bg-[var(--card)]/92 [&_[data-slot=input-group]]:shadow-sm [&_[data-slot=input-group]]:backdrop-blur'
+        variant === "center"
+          ? "mx-auto w-full max-w-xl [&_[data-slot=input-group]]:rounded-[1.75rem] [&_[data-slot=input-group]]:border-[var(--border)] [&_[data-slot=input-group]]:bg-[var(--card)]/92 [&_[data-slot=input-group]]:shadow-sm [&_[data-slot=input-group]]:backdrop-blur"
+          : "mx-auto w-full max-w-2xl [&_[data-slot=input-group]]:rounded-[1.4rem] [&_[data-slot=input-group]]:border-[var(--border)] [&_[data-slot=input-group]]:bg-[var(--card)]/92 [&_[data-slot=input-group]]:shadow-sm [&_[data-slot=input-group]]:backdrop-blur"
       }
       globalDrop
       maxFiles={4}
@@ -1052,5 +1042,5 @@ function WorkspaceComposer(props: {
         <PromptInputSubmit onStop={stop} status={status} />
       </PromptInputFooter>
     </PromptInput>
-  )
+  );
 }

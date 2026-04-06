@@ -3,7 +3,6 @@ import {
   calendarToolSignInRequiredSchema,
   writeCalendarToolSuccessSchema,
   type CheckAvailabilityToolOutput,
-  type GetEventToolOutput,
   type ListWritableCalendarsToolOutput,
   type SearchEventsToolOutput,
   type SourceInput,
@@ -14,7 +13,6 @@ import {
 export type GoogleCalendarToolName =
   | 'list_writable_calendars'
   | 'search_events'
-  | 'get_event'
   | 'check_availability'
   | 'create_event'
   | 'update_event'
@@ -26,7 +24,6 @@ export type GoogleCalendarUITools = Record<
   { input: unknown; output: ListWritableCalendarsToolOutput }
 > &
   Record<'search_events', { input: unknown; output: SearchEventsToolOutput }> &
-  Record<'get_event', { input: unknown; output: GetEventToolOutput }> &
   Record<'check_availability', { input: unknown; output: CheckAvailabilityToolOutput }> &
   Record<
     'create_event' | 'update_event' | 'reschedule_event' | 'delete_event',
@@ -44,7 +41,6 @@ export type GoogleCalendarToolUIPart = ToolUIPart<GoogleCalendarUITools>
 const GOOGLE_CALENDAR_TOOL_NAMES = new Set<GoogleCalendarToolName>([
   'list_writable_calendars',
   'search_events',
-  'get_event',
   'check_availability',
   'create_event',
   'update_event',
@@ -89,7 +85,6 @@ const TOOL_PREFIX = 'tool-'
 const TOOL_META: Record<GoogleCalendarToolName, { label: string; done: string; doing: string }> = {
   list_writable_calendars: { label: 'List writable calendars', done: 'Checked which calendars can be updated.', doing: 'Checking which calendars can be updated.' },
   search_events: { label: 'Search calendar events', done: 'Looked for matching events.', doing: 'Looking for matching events.' },
-  get_event: { label: 'Load event details', done: 'Loaded the selected event.', doing: 'Loading the selected event.' },
   check_availability: { label: 'Check availability', done: 'Checked calendar availability.', doing: 'Checking calendar availability.' },
   create_event: { label: 'Create calendar event', done: 'Created the calendar event.', doing: 'Creating the calendar event.' },
   update_event: { label: 'Update calendar event', done: 'Updated the calendar event.', doing: 'Updating the calendar event.' },

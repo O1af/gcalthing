@@ -19,6 +19,7 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
   'https://www.googleapis.com/auth/calendar.events.freebusy',
+  'https://www.googleapis.com/auth/contacts.other.readonly',
 ]
 
 interface StoredOAuthState {
