@@ -24,23 +24,24 @@ export function buildChatSystemPrompt(params: {
 
 function buildInstructions(executionMode: ExecutionMode, signedIn: boolean): string {
   const lines = [
-    'You are GCalthing, a concise Google Calendar assistant.',
+    'You are GCalthing, a friendly and capable Google Calendar assistant. You help people manage their schedule, understand their events, and stay on top of what\'s coming up.',
     '',
     '## Instructions',
-    '- Answer calendar questions directly from the context below when possible.',
-    '- Use search_events or get_event only when the answer is not in your context window.',
+    '- Answer calendar questions directly from the context below when you can.',
+    '- Use search_events for events outside the schedule window, or when you need to find something specific.',
+    '- Use get_event whenever the user asks for details about a specific event — attendees, RSVPs, description, meeting links, organizer, timestamps, etc. The schedule context only has a summary; get_event returns the full picture.',
     '- For writes (create/update/delete), provide all required fields: title, date, startTime (or allDay: true), and calendarId.',
-    '- Resolve attendee names to emails using your memory and the attendee info visible in events below. If you cannot find an email, ask the user.',
+    '- Resolve attendee names to emails using your memory and the attendee info visible in events. If you cannot find an email, ask.',
     '- Pick the right calendar from the list below. Default to the primary calendar if unsure.',
-    '- Use manage_facts to proactively remember anything useful: attendee emails, preferences, patterns. Remove facts that are outdated or wrong.',
-    '- If required details are missing, ask a short follow-up question instead of guessing.',
+    '- Use manage_facts to remember useful things across conversations: emails, preferences, recurring patterns. Remove facts that become outdated.',
+    '- If required details are missing, ask a short follow-up instead of guessing.',
     executionMode === 'approval-first'
-      ? '- Execution mode is approval-first. When a calendar write is fully specified, call the write tool. The UI will handle approval before execution.'
-      : '- Execution mode is direct-execution. Explicit complete write requests may run immediately. If details are incomplete or ambiguous, ask first.',
+      ? '- Execution mode is approval-first. When a calendar write is fully specified, call the write tool — the UI will handle approval before it runs.'
+      : '- Execution mode is direct-execution. Complete, unambiguous write requests can run immediately. Ask first if anything is unclear.',
     signedIn
       ? '- Google Calendar tools are available.'
       : '- The user is signed out. Calendar tools will report that Google sign-in is required.',
-    '- Keep responses short, practical, and action-oriented.',
+    '- Be warm, helpful, and concise. Lead with what matters.',
   ]
 
   return lines.join('\n')
@@ -142,16 +143,19 @@ function formatEventLine(event: GoogleCalendarEvent): string {
   }
 
   const attendees = (event.attendees ?? [])
-    .filter((a): a is { email: string; displayName?: string } => Boolean(a.email))
+    .filter((a): a is typeof a & { email: string } => Boolean(a.email))
     .slice(0, 20)
   if (attendees.length > 0) {
     const total = event.attendees?.length ?? 0
     const remaining = total - attendees.length
-    const labels = attendees.map((a) =>
-      a.displayName && a.displayName !== a.email
-        ? `${a.displayName} <${a.email}>`
-        : a.email,
-    )
+    const labels = attendees.map((a) => {
+      const name =
+        a.displayName && a.displayName !== a.email
+          ? `${a.displayName} <${a.email}>`
+          : a.email
+      const rsvp = a.responseStatus && a.responseStatus !== 'needsAction' ? ` (${a.responseStatus})` : ''
+      return `${name}${rsvp}`
+    })
     const suffix = remaining > 0 ? `, +${remaining} more` : ''
     parts.push(` · ${labels.join(', ')}${suffix}`)
   }

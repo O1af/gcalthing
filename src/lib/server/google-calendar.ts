@@ -13,6 +13,11 @@ export interface GoogleCalendarListEntry {
 export interface GoogleEventAttendee {
   email?: string;
   displayName?: string;
+  responseStatus?: string;
+  self?: boolean;
+  organizer?: boolean;
+  optional?: boolean;
+  comment?: string;
 }
 
 export interface GoogleCalendarEvent {
@@ -21,14 +26,23 @@ export interface GoogleCalendarEvent {
   description?: string;
   location?: string;
   recurringEventId?: string;
+  recurrence?: string[];
   status?: string;
+  created?: string;
+  updated?: string;
+  visibility?: string;
   attendees?: GoogleEventAttendee[];
-  organizer?: { email?: string; displayName?: string };
+  organizer?: { email?: string; displayName?: string; self?: boolean };
+  creator?: { email?: string; displayName?: string; self?: boolean };
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
   calendarId: string;
   calendarName: string;
   htmlLink?: string;
+  hangoutLink?: string;
+  conferenceData?: {
+    entryPoints?: Array<{ entryPointType?: string; uri?: string; label?: string }>;
+  };
 }
 
 export async function listWritableCalendars(accessToken: string) {

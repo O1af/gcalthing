@@ -200,18 +200,52 @@ export function createCalendarToolSet(writeNeedsApproval: boolean) {
                 eventId,
               )
 
+              const entryPoints =
+                event.conferenceData?.entryPoints?.map((ep) => ({
+                  label: ep.label ?? undefined,
+                  type: ep.entryPointType ?? undefined,
+                  uri: ep.uri ?? undefined,
+                })) ?? []
+
               return {
                 detail: `Loaded ${event.summary ?? 'the selected event'}.`,
                 event: {
-                  attendees: event.attendees ?? [],
+                  attendees: (event.attendees ?? []).slice(0, 100).map((a) => ({
+                    comment: a.comment ?? undefined,
+                    displayName: a.displayName ?? undefined,
+                    email: a.email ?? undefined,
+                    optional: a.optional ?? undefined,
+                    organizer: a.organizer ?? undefined,
+                    responseStatus: a.responseStatus ?? undefined,
+                    self: a.self ?? undefined,
+                  })),
                   calendarId: event.calendarId,
                   calendarName: event.calendarName,
+                  conferenceEntryPoints: entryPoints,
+                  created: event.created ?? null,
+                  creator: event.creator
+                    ? { displayName: event.creator.displayName, email: event.creator.email }
+                    : null,
                   description: event.description ?? null,
                   end: event.end ?? null,
+                  hangoutLink: event.hangoutLink ?? null,
+                  htmlLink: event.htmlLink ?? null,
                   id: event.id,
                   location: event.location ?? null,
+                  organizer: event.organizer
+                    ? {
+                        displayName: event.organizer.displayName,
+                        email: event.organizer.email,
+                        self: event.organizer.self,
+                      }
+                    : null,
+                  recurrence: event.recurrence ?? null,
+                  recurringEventId: event.recurringEventId ?? null,
                   start: event.start ?? null,
+                  status: event.status ?? null,
                   summary: event.summary ?? '(untitled)',
+                  updated: event.updated ?? null,
+                  visibility: event.visibility ?? null,
                 },
                 status: 'ok' as const,
               }

@@ -135,12 +135,42 @@ export const getEventToolOutputSchema = z.union([
       attendees: z
         .array(
           z.object({
+            comment: z.string().optional(),
             displayName: z.string().optional(),
             email: z.string().optional(),
+            optional: z.boolean().optional(),
+            organizer: z.boolean().optional(),
+            responseStatus: z.string().optional(),
+            self: z.boolean().optional(),
           }),
         )
         .default([]),
+      conferenceEntryPoints: z
+        .array(
+          z.object({
+            label: z.string().optional(),
+            type: z.string().optional(),
+            uri: z.string().optional(),
+          }),
+        )
+        .default([]),
+      created: z.string().nullable().default(null),
+      creator: z
+        .object({ displayName: z.string().optional(), email: z.string().optional() })
+        .nullable()
+        .default(null),
       description: z.string().nullable().default(null),
+      hangoutLink: z.string().nullable().default(null),
+      htmlLink: z.string().nullable().default(null),
+      organizer: z
+        .object({ displayName: z.string().optional(), email: z.string().optional(), self: z.boolean().optional() })
+        .nullable()
+        .default(null),
+      recurrence: z.array(z.string()).nullable().default(null),
+      recurringEventId: z.string().nullable().default(null),
+      status: z.string().nullable().default(null),
+      updated: z.string().nullable().default(null),
+      visibility: z.string().nullable().default(null),
     }),
     status: z.literal('ok'),
   }),
