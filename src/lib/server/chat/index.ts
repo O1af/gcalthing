@@ -6,8 +6,6 @@ import type { AppChatMessage } from "@/lib/chat-ui";
 import { getMessageText } from "@/lib/chat-ui";
 import type { ExecutionMode, SourceInput } from "@/lib/contracts";
 import { emptyFactsContext } from "@/lib/contracts";
-import { logDebug } from "@/lib/server/debug";
-import { getServerEnv } from "@/lib/server/env";
 import { buildCalendarAgentOptions, getCalendarAgents } from "./agent";
 import { collectConversationSourceInputs } from "./chat-helpers";
 
@@ -28,7 +26,6 @@ export async function streamAssistantTurn(params: {
   abortSignal?: AbortSignal;
 }): Promise<Response> {
   const input = buildAssistantTurnInput(params);
-  const env = getServerEnv();
   const { getSessionContext } = await import("@/lib/server/auth");
   const session = await getSessionContext();
   const turnId = crypto.randomUUID().slice(0, 8);
@@ -49,18 +46,6 @@ export async function streamAssistantTurn(params: {
         loadNearTermEvents(session.tokens.accessToken, calendars),
       ])
     : [emptyFactsContext, []];
-
-  logDebug("ai:chat", "turn:start", {
-    calendarCount: calendars.length,
-    executionMode: input.executionMode,
-    factCount: facts.length,
-    messageCount: input.messages.length,
-    model: env.OPENAI_MODEL,
-    nearTermEventCount: nearTermEvents.length,
-    signedIn: Boolean(session),
-    sourceInputCount: input.sourceInputs.length,
-    turnId,
-  });
 
   return createAgentUIStreamResponse({
     abortSignal: params.abortSignal,

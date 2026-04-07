@@ -82,8 +82,7 @@ export async function loadNearTermEvents(
     }),
   );
 
-  const events = perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
-  return enrichEventsWithAttendeeNames(accessToken, events);
+  return perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
 }
 
 export async function searchGoogleCalendarEvents(params: {
@@ -353,15 +352,11 @@ async function enrichEventsWithAttendeeNames(
     ...event,
     attendees: event.attendees?.map((a) => ({
       ...a,
-      displayName: a.displayName ?? (a.email ? nameMap.get(a.email) : undefined),
+      displayName: a.displayName ?? (a.email ? nameMap.get(a.email.toLowerCase()) : undefined),
     })),
   }));
 }
 
-/** Resolve email addresses to display names using the Google People API.
- *  Returns a map of email → displayName for all successfully resolved emails.
- *  Silently returns an empty map if the scope is not granted or the API fails.
- */
 export async function resolveAttendeeNames(
   accessToken: string,
   emails: string[],
@@ -369,49 +364,80 @@ export async function resolveAttendeeNames(
   const result = new Map<string, string>();
   if (emails.length === 0) return result;
 
-  // Deduplicate and cap at 50 to avoid excessive API calls.
-  const unique = [...new Set(emails)].slice(0, 50);
+  const normalizedEmails = emails.map((e) => e.toLowerCase());
 
-  // Search otherContacts (people the user has interacted with) and regular contacts in parallel.
-  const searches = unique.map(async (email) => {
-    try {
-      const params = new URLSearchParams({ query: email, readMask: "names,emailAddresses" });
-      const [otherRes, contactsRes] = await Promise.allSettled([
-        fetch(
-          `https://people.googleapis.com/v1/otherContacts:search?${params}`,
-          { headers: { authorization: `Bearer ${accessToken}` } },
-        ),
-        fetch(
-          `https://people.googleapis.com/v1/people:searchContacts?${params}`,
-          { headers: { authorization: `Bearer ${accessToken}` } },
-        ),
-      ]);
+  // Phase 1: fetch all other contacts in one call and match client-side.
+  try {
+    const params = new URLSearchParams({ pageSize: "1000", readMask: "names,emailAddresses" });
+    const response = await fetch(
+      `https://people.googleapis.com/v1/otherContacts?${params}`,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+    );
 
-      for (const settled of [otherRes, contactsRes]) {
-        if (settled.status !== "fulfilled" || !settled.value.ok) continue;
-        const data = (await settled.value.json()) as {
-          results?: Array<{
-            person?: {
-              names?: Array<{ displayName?: string }>;
-              emailAddresses?: Array<{ value?: string }>;
-            };
-          }>;
-        };
-        for (const item of data.results ?? []) {
-          const name = item.person?.names?.[0]?.displayName;
-          const personEmail = item.person?.emailAddresses?.[0]?.value;
-          if (name && personEmail) {
-            result.set(personEmail.toLowerCase(), name);
-          }
+    if (response.ok) {
+      const data = (await response.json()) as {
+        otherContacts?: Array<{
+          names?: Array<{ displayName?: string }>;
+          emailAddresses?: Array<{ value?: string }>;
+        }>;
+      };
+
+      for (const person of data.otherContacts ?? []) {
+        const name = person.names?.[0]?.displayName;
+        if (!name) continue;
+        for (const addr of person.emailAddresses ?? []) {
+          if (addr.value) result.set(addr.value.toLowerCase(), name);
         }
-        if (result.has(email.toLowerCase())) break;
       }
-    } catch {
-      // Non-fatal — fall back to email address display.
     }
-  });
+  } catch {
+    // Non-fatal — continue to per-email fallback.
+  }
 
-  await Promise.all(searches);
+  // Phase 2: for any emails still unresolved, search individually (batched at 5).
+  const unresolved = normalizedEmails.filter((e) => !result.has(e));
+  if (unresolved.length === 0) return result;
+
+  const BATCH = 5;
+  for (let i = 0; i < unresolved.length; i += BATCH) {
+    const batch = unresolved.slice(i, i + BATCH);
+    await Promise.all(
+      batch.map(async (email) => {
+        try {
+          const params = new URLSearchParams({ query: email, readMask: "names,emailAddresses" });
+          const [otherRes, contactsRes] = await Promise.allSettled([
+            fetch(`https://people.googleapis.com/v1/otherContacts:search?${params}`, {
+              headers: { authorization: `Bearer ${accessToken}` },
+            }),
+            fetch(`https://people.googleapis.com/v1/people:searchContacts?${params}`, {
+              headers: { authorization: `Bearer ${accessToken}` },
+            }),
+          ]);
+
+          for (const settled of [otherRes, contactsRes]) {
+            if (settled.status !== "fulfilled" || !settled.value.ok) continue;
+            const data = (await settled.value.json()) as {
+              results?: Array<{
+                person?: {
+                  names?: Array<{ displayName?: string }>;
+                  emailAddresses?: Array<{ value?: string }>;
+                };
+              }>;
+            };
+            for (const item of data.results ?? []) {
+              const name = item.person?.names?.[0]?.displayName;
+              const personEmail = item.person?.emailAddresses?.[0]?.value;
+              if (name && personEmail) result.set(personEmail.toLowerCase(), name);
+            }
+            if (result.has(email)) break;
+          }
+        } catch {
+          // Non-fatal — fall back to email address display.
+        }
+      }),
+    );
+  }
+
   return result;
 }
 

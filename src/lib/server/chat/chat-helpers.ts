@@ -7,7 +7,6 @@ import type {
   WriteEventRequest,
 } from '@/lib/contracts'
 import { writeEventRequestSchema } from '@/lib/contracts'
-import { logDebug, withDebugTiming } from '@/lib/server/debug'
 import type { SessionContext } from './index'
 
 export function collectConversationSourceInputs(messages: AppChatMessage[]) {
@@ -137,27 +136,12 @@ export async function withSession<T>(
   return fn(session)
 }
 
-export async function executeLoggedTool<T>(
-  toolName: string,
-  turnId: string,
+export function executeLoggedTool<T>(
+  _toolName: string,
+  _turnId: string,
   run: () => Promise<T>,
 ): Promise<T> {
-  logDebug('ai:tool', 'start', {
-    toolName,
-    turnId,
-  })
-
-  return withDebugTiming('ai:tool', toolName, async () => {
-    const result = await run()
-    logDebug('ai:tool', 'result', {
-      resultKind: summarizeToolResult(result),
-      toolName,
-      turnId,
-    })
-    return result
-  }, {
-    turnId,
-  })
+  return run()
 }
 
 function mergeSourceInputs(left: SourceInput[], right: SourceInput[]): SourceInput[] {
@@ -171,14 +155,3 @@ function mergeSourceInputs(left: SourceInput[], right: SourceInput[]): SourceInp
   })
 }
 
-function summarizeToolResult(result: unknown): string {
-  if (!result || typeof result !== 'object') {
-    return String(result)
-  }
-
-  if ('detail' in result && typeof (result as Record<string, unknown>).detail === 'string') {
-    return (result as Record<string, string>).detail
-  }
-
-  return 'object'
-}

@@ -2,7 +2,6 @@ import { ToolLoopAgent, stepCountIs } from 'ai'
 import { z } from 'zod'
 import { executionModeSchema, factsContextSchema, sourceInputSchema, type ExecutionMode, type FactRecord, type SourceInput } from '@/lib/contracts'
 import { getOpenAIModel } from '@/lib/server/ai-model'
-import { logDebug } from '@/lib/server/debug'
 import { getServerEnv } from '@/lib/server/env'
 import type { GoogleCalendarEvent, GoogleCalendarListEntry } from '@/lib/server/google-calendar'
 import { buildChatSystemPrompt } from '@/lib/server/chat-system-prompt'
@@ -69,13 +68,7 @@ function createCalendarAgent(params: {
     callOptionsSchema: calendarAgentCallOptionsSchema,
     id,
     model,
-    onFinish: ({ experimental_context, text }) => {
-      const context = experimental_context as CalendarAgentCallOptions | undefined
-      logDebug('ai:chat', 'turn:done', {
-        responseTextLength: text.trim().length,
-        turnId: context?.turnId ?? 'unknown',
-      })
-    },
+    onFinish: undefined,
     prepareCall: async ({ options, ...baseCall }) => ({
       ...baseCall,
       experimental_context: options,
