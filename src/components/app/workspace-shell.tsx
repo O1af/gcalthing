@@ -1,11 +1,17 @@
 "use client";
 
-import { DefaultChatTransport, type FileUIPart } from "ai";
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+  type FileUIPart,
+} from "ai";
 import { useChat } from "@ai-sdk/react";
 import {
   ChainOfThought,
   ChainOfThoughtContent,
   ChainOfThoughtHeader,
+  ChainOfThoughtSearchResult,
+  ChainOfThoughtSearchResults,
   ChainOfThoughtStep,
 } from "@/components/ai-elements/chain-of-thought";
 import {
@@ -36,7 +42,6 @@ import {
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
 import { EventSuccessCard, SignInRequiredCard } from "@/components/app/chat-notice-card";
-import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -85,30 +90,38 @@ import { cn } from "@/lib/utils";
 import {
   getGoogleCalendarToolLabel,
   getGoogleCalendarSignInDetail,
-  getGoogleCalendarToolSummary,
+  getGoogleCalendarToolRichLabel,
   getGoogleCalendarWriteSuccess,
   getMessageFiles,
   getMessageReasoningText,
   getMessageGoogleCalendarToolParts,
   getMessageText,
   isMessageReasoningStreaming,
+  parseToolInput,
   type GoogleCalendarToolUIPart,
 } from "@/lib/chat-ui";
 import { executionModeSchema, type ExecutionMode } from "@/lib/contracts";
 import {
+  CalendarCog,
   CalendarDays,
+  CalendarPlus,
+  CalendarX,
   ChevronsUpDown,
+  Clock,
   Clock3,
-  ListChecks,
+  FileText,
   LogIn,
   LogOut,
+  MapPin,
   Monitor,
   Moon,
   PanelLeft,
   Paperclip,
+  Search,
   Settings,
   SquarePen,
   Sun,
+  Users,
 } from "lucide-react";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -129,10 +142,6 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   const [executionMode, setExecutionMode] = useExecutionMode();
   const { addToolApprovalResponse, messages, sendMessage, setMessages, status, stop } =
     useWorkspaceChat(executionMode);
-  const [openChainMessageId, setOpenChainMessageId] = useState<string | null>(null);
-  const [manuallyClosedChainMessageIds, setManuallyClosedChainMessageIds] = useState<
-    Record<string, true>
-  >({});
   const conversation = useStickToBottom({
     initial: "smooth",
     resize: "smooth",
@@ -144,8 +153,6 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
   const handleClearChat = useCallback(() => {
     stop();
     setMessages([]);
-    setOpenChainMessageId(null);
-    setManuallyClosedChainMessageIds({});
   }, [stop, setMessages]);
 
   const handlePromptSubmit = useCallback(
@@ -171,43 +178,6 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
     [conversation, sendMessage],
   );
 
-  const handleToolChainOpenChange = useCallback((messageId: string, open: boolean) => {
-    if (open) {
-      setOpenChainMessageId(messageId);
-      setManuallyClosedChainMessageIds((current) => {
-        if (!(messageId in current)) {
-          return current;
-        }
-
-        const next = { ...current };
-        delete next[messageId];
-        return next;
-      });
-      return;
-    }
-
-    setOpenChainMessageId((current) => (current === messageId ? null : current));
-    setManuallyClosedChainMessageIds((current) => ({
-      ...current,
-      [messageId]: true,
-    }));
-  }, []);
-
-  useEffect(() => {
-    if (
-      isResponding &&
-      lastMessage?.role === "assistant" &&
-      !manuallyClosedChainMessageIds[lastMessage.id]
-    ) {
-      setOpenChainMessageId(lastMessage.id);
-      return;
-    }
-
-    if (isResponding && lastMessage?.role === "user") {
-      setOpenChainMessageId(null);
-    }
-  }, [isResponding, lastMessage, manuallyClosedChainMessageIds]);
-
   const hasContent = messages.length > 0;
   const shouldShowPendingAssistantMessage = isResponding && lastMessage?.role !== "assistant";
 
@@ -216,21 +186,13 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
       <div data-message-id={message.id} data-slot="chat-message-row" key={message.id}>
         <ChatMessageRow
           addToolApprovalResponse={addToolApprovalResponse}
-          isChainOpen={openChainMessageId === message.id}
           isResponding={isResponding}
           message={message}
-          onToolChainOpenChange={handleToolChainOpenChange}
           showStreamingIndicator={index === messages.length - 1}
         />
       </div>
     ),
-    [
-      addToolApprovalResponse,
-      handleToolChainOpenChange,
-      isResponding,
-      messages.length,
-      openChainMessageId,
-    ],
+    [addToolApprovalResponse, isResponding, messages.length],
   );
 
   return (
@@ -366,6 +328,7 @@ function useWorkspaceChat(executionMode: ExecutionMode) {
 
   return useChat<AppChatMessage>({
     id: "workspace-chat",
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     transport: transportRef.current,
   });
 }
@@ -375,18 +338,14 @@ function ChatMessageRow(props: {
     approved: boolean;
     id: string;
   }) => void | PromiseLike<void>;
-  isChainOpen: boolean;
   isResponding: boolean;
   message: AppChatMessage;
-  onToolChainOpenChange: (messageId: string, open: boolean) => void;
   showStreamingIndicator: boolean;
 }): React.JSX.Element {
   const {
     addToolApprovalResponse,
-    isChainOpen,
     isResponding,
     message,
-    onToolChainOpenChange,
     showStreamingIndicator,
   } = props;
   const messageFiles = getMessageFiles(message);
@@ -424,13 +383,7 @@ function ChatMessageRow(props: {
 
   return (
     <div className="flex w-full flex-col gap-3">
-      {toolParts.length > 0 ? (
-        <CalendarToolChain
-          isOpen={isChainOpen}
-          onOpenChange={(open) => onToolChainOpenChange(message.id, open)}
-          toolParts={toolParts}
-        />
-      ) : null}
+      {toolParts.length > 0 ? <CalendarToolChain toolParts={toolParts} /> : null}
       {showReasoning ? (
         <Reasoning
           isStreaming={
@@ -441,7 +394,7 @@ function ChatMessageRow(props: {
           {messageReasoning ? <ReasoningContent>{messageReasoning}</ReasoningContent> : null}
         </Reasoning>
       ) : null}
-      {messageText ? <MessageResponse className="text-sm">{messageText}</MessageResponse> : null}
+      {messageText ? <MessageResponse>{messageText}</MessageResponse> : null}
       {approvalRequestedParts.map((toolPart) => (
         <ToolApprovalCard
           key={toolPart.toolCallId}
@@ -470,37 +423,37 @@ function PendingAssistantMessage(): React.JSX.Element {
   );
 }
 
+const TOOL_ICON = {
+  check_availability: Clock3,
+  create_event: CalendarPlus,
+  delete_event: CalendarX,
+  search_events: Search,
+  update_event: CalendarCog,
+} as const;
+
+function getToolIcon(toolPart: GoogleCalendarToolUIPart) {
+  const name = toolPart.type.replace("tool-", "") as keyof typeof TOOL_ICON;
+  return TOOL_ICON[name] ?? Search;
+}
+
 function CalendarToolChain(props: {
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
   toolParts: GoogleCalendarToolUIPart[];
 }): React.JSX.Element {
-  const { isOpen, onOpenChange, toolParts } = props;
-  const hasActiveTool = toolParts.some(isToolPartActive);
+  const { toolParts } = props;
 
   return (
-    <ChainOfThought onOpenChange={onOpenChange} open={isOpen}>
-      <ChainOfThoughtHeader>
-        <ListChecks className="size-4" />
-        <span className="font-medium">Google Calendar activity</span>
-        <Badge className="ml-1" variant="outline">
-          {toolParts.length}
-        </Badge>
-        {hasActiveTool ? (
-          <Badge variant="secondary">
-            <Clock3 className="size-3" />
-            Running
-          </Badge>
-        ) : null}
-      </ChainOfThoughtHeader>
-      <ChainOfThoughtContent className="space-y-2">
+    <ChainOfThought defaultOpen className="rounded-none border-none bg-transparent">
+      <ChainOfThoughtHeader />
+      <ChainOfThoughtContent className="border-t-0 px-0">
         {toolParts.map((toolPart) => (
           <ChainOfThoughtStep
-            description={getGoogleCalendarToolSummary(toolPart)}
+            icon={getToolIcon(toolPart)}
             key={toolPart.toolCallId}
-            label={getGoogleCalendarToolLabel(toolPart)}
+            label={getGoogleCalendarToolRichLabel(toolPart)}
             status={getToolStepStatus(toolPart)}
-          />
+          >
+            <ToolStepSubDetails toolPart={toolPart} />
+          </ChainOfThoughtStep>
         ))}
       </ChainOfThoughtContent>
     </ChainOfThought>
@@ -525,6 +478,144 @@ function getToolStepStatus(toolPart: GoogleCalendarToolUIPart): "complete" | "ac
   }
 
   return "complete";
+}
+
+function formatTimeRange(startTime?: string | null, endTime?: string | null, durationMinutes?: number | null): string | null {
+  if (!startTime) return null;
+  if (endTime) return `${startTime} – ${endTime}`;
+  if (durationMinutes) {
+    const [h, m] = startTime.split(":").map(Number);
+    const totalMins = h * 60 + m + durationMinutes;
+    const endH = Math.floor(totalMins / 60) % 24;
+    const endM = totalMins % 60;
+    return `${startTime} – ${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")}`;
+  }
+  return startTime;
+}
+
+function EventApprovalDetails(props: {
+  toolPart: Pick<GoogleCalendarToolUIPart, "type" | "input">;
+}): React.JSX.Element | null {
+  const parsed = parseToolInput(props.toolPart);
+  if (!parsed) return null;
+
+  if (parsed.tool === "delete_event") {
+    if (!parsed.data.title && !parsed.data.when) return null;
+    return (
+      <div className="mt-2 rounded-lg bg-muted/50 p-3 space-y-1.5">
+        {parsed.data.title ? (
+          <p className="text-sm font-medium text-foreground">{parsed.data.title}</p>
+        ) : null}
+        {parsed.data.when ? (
+          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <CalendarDays className="size-3.5 shrink-0" />
+            <span>{parsed.data.when}</span>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (parsed.tool === "create_event" || parsed.tool === "update_event") {
+    const d = parsed.data;
+    const timeRange = formatTimeRange(d.startTime, d.endTime, d.durationMinutes);
+    const attendeeList = d.attendees?.map((a) => a.name || a.email).join(", ");
+    const hasAny = d.title || d.date || timeRange || d.location || attendeeList || d.description;
+    if (!hasAny) return null;
+
+    return (
+      <div className="mt-2 rounded-lg bg-muted/50 p-3 space-y-1.5">
+        {d.title ? (
+          <p className="text-sm font-medium text-foreground">{d.title}</p>
+        ) : null}
+        {d.date ? (
+          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <CalendarDays className="size-3.5 shrink-0" />
+            <span>{d.allDay ? `All day · ${d.date}` : d.date}</span>
+          </div>
+        ) : null}
+        {timeRange ? (
+          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <Clock className="size-3.5 shrink-0" />
+            <span>{timeRange}</span>
+          </div>
+        ) : null}
+        {d.location ? (
+          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <MapPin className="size-3.5 shrink-0" />
+            <span>{d.location}</span>
+          </div>
+        ) : null}
+        {attendeeList ? (
+          <div className="flex items-start gap-1.5 text-sm text-muted-foreground">
+            <Users className="size-3.5 shrink-0 mt-0.5" />
+            <span>{attendeeList}</span>
+          </div>
+        ) : null}
+        {d.description ? (
+          <div className="flex items-start gap-1.5 text-sm text-muted-foreground">
+            <FileText className="size-3.5 shrink-0 mt-0.5" />
+            <span className="line-clamp-2">{d.description}</span>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function ToolStepSubDetails(props: {
+  toolPart: GoogleCalendarToolUIPart;
+}): React.JSX.Element | null {
+  const parsed = parseToolInput(props.toolPart);
+  if (!parsed) return null;
+
+  if (parsed.tool === "create_event" || parsed.tool === "update_event") {
+    const d = parsed.data;
+    const timeRange = formatTimeRange(d.startTime, d.endTime, d.durationMinutes);
+    const attendees = d.attendees ?? [];
+    if (!timeRange && attendees.length === 0 && !d.location) return null;
+
+    return (
+      <div className="space-y-1.5">
+        {timeRange || d.location ? (
+          <p className="text-xs text-muted-foreground">
+            {[timeRange, d.location].filter(Boolean).join(" · ")}
+          </p>
+        ) : null}
+        {attendees.length > 0 ? (
+          <ChainOfThoughtSearchResults>
+            {attendees.map((a) => (
+              <ChainOfThoughtSearchResult key={a.email}>{a.name || a.email}</ChainOfThoughtSearchResult>
+            ))}
+          </ChainOfThoughtSearchResults>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (parsed.tool === "search_events") {
+    const q = parsed.data.query;
+    if (!q) return null;
+    return (
+      <ChainOfThoughtSearchResults>
+        <ChainOfThoughtSearchResult>{q}</ChainOfThoughtSearchResult>
+      </ChainOfThoughtSearchResults>
+    );
+  }
+
+  if (parsed.tool === "check_availability") {
+    const d = parsed.data;
+    const timeRange = formatTimeRange(d.startTime, d.endTime, d.durationMinutes);
+    return (
+      <p className="text-xs text-muted-foreground">
+        {[d.date, timeRange].filter(Boolean).join(" · ")}
+      </p>
+    );
+  }
+
+  return null;
 }
 
 function ToolApprovalCard(props: {
@@ -552,6 +643,7 @@ function ToolApprovalCard(props: {
       <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
         {getGoogleCalendarToolLabel(toolPart)}
       </p>
+      <EventApprovalDetails toolPart={toolPart} />
       <div className="mt-3 flex gap-2">
         <Button disabled={isSubmitting} onClick={() => void handleResponse(true)} size="sm">
           Approve

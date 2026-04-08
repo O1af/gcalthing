@@ -1,22 +1,11 @@
-import type { AppChatMessage } from '@/lib/chat-ui'
-import { toSourceInputsFromMessage } from '@/lib/chat-ui'
 import type {
   CalendarToolSignInRequired,
-  SourceInput,
   WriteCalendarToolSuccess,
   WriteEventRequest,
 } from '@/lib/contracts'
 import { writeEventRequestSchema } from '@/lib/contracts'
+import type { GoogleCalendarListEntry } from '@/lib/server/google-calendar'
 import type { SessionContext } from './index'
-
-export function collectConversationSourceInputs(messages: AppChatMessage[]) {
-  return mergeSourceInputs(
-    [],
-    messages
-      .filter((message) => message.role === 'user')
-      .flatMap((message) => toSourceInputsFromMessage(message)),
-  )
-}
 
 export function validateRequiredFields(input: {
   title?: string | null
@@ -32,16 +21,13 @@ export function validateRequiredFields(input: {
 }
 
 export async function submitCreateEvent(params: {
+  calendars: GoogleCalendarListEntry[]
   request: WriteEventRequest
   session: NonNullable<SessionContext>
 }): Promise<WriteCalendarToolSuccess> {
-  const { request, session } = params
-  const {
-    createGoogleCalendarEvent,
-    listWritableCalendars,
-  } = await import('@/lib/server/google-calendar')
+  const { calendars, request, session } = params
+  const { createGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
 
-  const calendars = await listWritableCalendars(session.tokens.accessToken)
   const calendarNameById = new Map(calendars.map((c) => [c.id, c.summary]))
 
   const result = await createGoogleCalendarEvent(
@@ -62,18 +48,15 @@ export async function submitCreateEvent(params: {
 }
 
 export async function submitUpdateEvent(params: {
+  calendars: GoogleCalendarListEntry[]
   calendarId: string
   eventId: string
   request: WriteEventRequest
   session: NonNullable<SessionContext>
 }): Promise<WriteCalendarToolSuccess> {
-  const { calendarId, eventId, request, session } = params
-  const {
-    updateGoogleCalendarEvent,
-    listWritableCalendars,
-  } = await import('@/lib/server/google-calendar')
+  const { calendars, calendarId, eventId, request, session } = params
+  const { updateGoogleCalendarEvent } = await import('@/lib/server/google-calendar')
 
-  const calendars = await listWritableCalendars(session.tokens.accessToken)
   const calendarNameById = new Map(calendars.map((c) => [c.id, c.summary]))
 
   const result = await updateGoogleCalendarEvent(
@@ -98,7 +81,6 @@ export async function submitUpdateEvent(params: {
 export function buildWriteEventRequest(
   input: Record<string, unknown>,
   localTimeZone: string,
-  sourceInputs: SourceInput[],
 ): WriteEventRequest {
   return writeEventRequestSchema.parse({
     title: input.title ?? '',
@@ -113,16 +95,7 @@ export function buildWriteEventRequest(
     recurrenceRule: input.recurrenceRule ?? null,
     calendarId: input.calendarId ?? 'primary',
     attendees: input.attendees ?? [],
-    sourceInputs,
-    appendSourceDetails: sourceInputs.length > 0,
   })
-}
-
-export function signInRequiredResult(detail: string): CalendarToolSignInRequired {
-  return {
-    detail,
-    status: 'sign-in-required',
-  }
 }
 
 export async function withSession<T>(
@@ -131,27 +104,7 @@ export async function withSession<T>(
   fn: (session: NonNullable<SessionContext>) => Promise<T>,
 ): Promise<T | CalendarToolSignInRequired> {
   if (!session) {
-    return signInRequiredResult(signInMessage)
+    return { detail: signInMessage, status: 'sign-in-required' }
   }
   return fn(session)
 }
-
-export function executeLoggedTool<T>(
-  _toolName: string,
-  _turnId: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  return run()
-}
-
-function mergeSourceInputs(left: SourceInput[], right: SourceInput[]): SourceInput[] {
-  const seen = new Set<string>()
-  return [...left, ...right].filter((input) => {
-    if (seen.has(input.id)) {
-      return false
-    }
-    seen.add(input.id)
-    return true
-  })
-}
-

@@ -46,8 +46,6 @@ export const writeEventRequestSchema = z.object({
   recurrenceRule: z.string().nullable().default(null),
   calendarId: z.string(),
   attendees: z.array(attendeeInputSchema).default([]),
-  sourceInputs: z.array(sourceInputSchema).default([]),
-  appendSourceDetails: z.boolean().default(true),
 })
 
 export const submitEventResponseSchema = z.object({
@@ -110,14 +108,6 @@ export const calendarToolSuccessBaseSchema = z.object({
   status: z.literal('ok'),
 })
 
-export const listWritableCalendarsToolOutputSchema = z.union([
-  calendarToolSignInRequiredSchema,
-  z.object({
-    calendars: z.array(calendarOptionSchema),
-    detail: z.string(),
-    status: z.literal('ok'),
-  }),
-])
 
 export const calendarToolAttendeeSchema = z.object({
   comment: z.string().optional(),
@@ -199,7 +189,6 @@ export type WriteEventRequest = z.infer<typeof writeEventRequestSchema>
 export type SubmitEventResponse = z.infer<typeof submitEventResponseSchema>
 export type CalendarToolNeedsInput = z.infer<typeof calendarToolNeedsInputSchema>
 export type CalendarToolSignInRequired = z.infer<typeof calendarToolSignInRequiredSchema>
-export type ListWritableCalendarsToolOutput = z.infer<typeof listWritableCalendarsToolOutputSchema>
 export type SearchEventsToolOutput = z.infer<typeof searchEventsToolOutputSchema>
 export type CheckAvailabilityToolOutput = z.infer<typeof checkAvailabilityToolOutputSchema>
 export type WriteCalendarToolSuccess = z.infer<typeof writeCalendarToolSuccessSchema>

@@ -1,9 +1,9 @@
 import type { FileUIPart, ToolUIPart, UIMessage } from 'ai'
+import { z } from 'zod'
 import {
   calendarToolSignInRequiredSchema,
   writeCalendarToolSuccessSchema,
   type CheckAvailabilityToolOutput,
-  type ListWritableCalendarsToolOutput,
   type SearchEventsToolOutput,
   type SourceInput,
   type WriteCalendarToolOutput,
@@ -11,22 +11,17 @@ import {
 } from '@/lib/contracts'
 
 export type GoogleCalendarToolName =
-  | 'list_writable_calendars'
   | 'search_events'
   | 'check_availability'
   | 'create_event'
   | 'update_event'
-  | 'reschedule_event'
   | 'delete_event'
 
-export type GoogleCalendarUITools = Record<
-  'list_writable_calendars',
-  { input: unknown; output: ListWritableCalendarsToolOutput }
-> &
+export type GoogleCalendarUITools =
   Record<'search_events', { input: unknown; output: SearchEventsToolOutput }> &
   Record<'check_availability', { input: unknown; output: CheckAvailabilityToolOutput }> &
   Record<
-    'create_event' | 'update_event' | 'reschedule_event' | 'delete_event',
+    'create_event' | 'update_event' | 'delete_event',
     { input: unknown; output: WriteCalendarToolOutput }
   >
 
@@ -39,12 +34,10 @@ export type AppChatMessage = UIMessage<
 export type GoogleCalendarToolUIPart = ToolUIPart<GoogleCalendarUITools>
 
 const GOOGLE_CALENDAR_TOOL_NAMES = new Set<GoogleCalendarToolName>([
-  'list_writable_calendars',
   'search_events',
   'check_availability',
   'create_event',
   'update_event',
-  'reschedule_event',
   'delete_event',
 ])
 
@@ -83,17 +76,132 @@ export function getMessageGoogleCalendarToolParts(
 const TOOL_PREFIX = 'tool-'
 
 const TOOL_META: Record<GoogleCalendarToolName, { label: string; done: string; doing: string }> = {
-  list_writable_calendars: { label: 'List writable calendars', done: 'Checked which calendars can be updated.', doing: 'Checking which calendars can be updated.' },
   search_events: { label: 'Search calendar events', done: 'Looked for matching events.', doing: 'Looking for matching events.' },
   check_availability: { label: 'Check availability', done: 'Checked calendar availability.', doing: 'Checking calendar availability.' },
   create_event: { label: 'Create calendar event', done: 'Created the calendar event.', doing: 'Creating the calendar event.' },
   update_event: { label: 'Update calendar event', done: 'Updated the calendar event.', doing: 'Updating the calendar event.' },
-  reschedule_event: { label: 'Reschedule calendar event', done: 'Rescheduled the calendar event.', doing: 'Rescheduling the calendar event.' },
   delete_event: { label: 'Delete calendar event', done: 'Deleted the calendar event.', doing: 'Deleting the calendar event.' },
 }
 
 function extractToolName(toolType: string): GoogleCalendarToolName {
   return toolType.slice(TOOL_PREFIX.length) as GoogleCalendarToolName
+}
+
+// Client-safe schemas for parsing toolPart.input for display purposes
+const attendeeDisplaySchema = z.object({ email: z.string(), name: z.string() })
+
+const eventInputDisplaySchema = z.object({
+  allDay: z.boolean().optional(),
+  attendees: z.array(attendeeDisplaySchema).optional(),
+  calendarId: z.string().nullish(),
+  date: z.string().nullish(),
+  description: z.string().nullish(),
+  durationMinutes: z.number().nullish(),
+  endTime: z.string().nullish(),
+  location: z.string().nullish(),
+  recurrenceRule: z.string().nullish(),
+  startTime: z.string().nullish(),
+  timezone: z.string().nullish(),
+  title: z.string().nullish(),
+}).partial()
+
+const deleteEventInputDisplaySchema = z.object({
+  calendarId: z.string(),
+  eventId: z.string(),
+  title: z.string().optional(),
+  when: z.string().optional(),
+})
+
+const updateEventInputDisplaySchema = eventInputDisplaySchema.extend({
+  calendarId: z.string(),
+  eventId: z.string(),
+})
+
+const searchEventsInputDisplaySchema = z.object({
+  calendarIds: z.array(z.string()).optional(),
+  dateFrom: z.string().nullish(),
+  dateTo: z.string().nullish(),
+  query: z.string().nullish(),
+})
+
+const checkAvailabilityInputDisplaySchema = z.object({
+  date: z.string(),
+  durationMinutes: z.number().nullish(),
+  endTime: z.string().nullish(),
+  startTime: z.string(),
+})
+
+export type EventInputDisplay = z.infer<typeof eventInputDisplaySchema>
+export type DeleteEventInputDisplay = z.infer<typeof deleteEventInputDisplaySchema>
+export type UpdateEventInputDisplay = z.infer<typeof updateEventInputDisplaySchema>
+export type SearchEventsInputDisplay = z.infer<typeof searchEventsInputDisplaySchema>
+export type CheckAvailabilityInputDisplay = z.infer<typeof checkAvailabilityInputDisplaySchema>
+
+export type ParsedToolInput =
+  | { tool: 'create_event'; data: EventInputDisplay }
+  | { tool: 'update_event'; data: UpdateEventInputDisplay }
+  | { tool: 'delete_event'; data: DeleteEventInputDisplay }
+  | { tool: 'search_events'; data: SearchEventsInputDisplay }
+  | { tool: 'check_availability'; data: CheckAvailabilityInputDisplay }
+  | null
+
+export function parseToolInput(toolPart: Pick<GoogleCalendarToolUIPart, 'type' | 'input'>): ParsedToolInput {
+  const toolName = extractToolName(toolPart.type)
+  switch (toolName) {
+    case 'create_event': {
+      const r = eventInputDisplaySchema.safeParse(toolPart.input)
+      return r.success ? { tool: 'create_event', data: r.data } : null
+    }
+    case 'update_event': {
+      const r = updateEventInputDisplaySchema.safeParse(toolPart.input)
+      return r.success ? { tool: toolName, data: r.data } : null
+    }
+    case 'delete_event': {
+      const r = deleteEventInputDisplaySchema.safeParse(toolPart.input)
+      return r.success ? { tool: 'delete_event', data: r.data } : null
+    }
+    case 'search_events': {
+      const r = searchEventsInputDisplaySchema.safeParse(toolPart.input)
+      return r.success ? { tool: 'search_events', data: r.data } : null
+    }
+    case 'check_availability': {
+      const r = checkAvailabilityInputDisplaySchema.safeParse(toolPart.input)
+      return r.success ? { tool: 'check_availability', data: r.data } : null
+    }
+    default:
+      return null
+  }
+}
+
+export function getGoogleCalendarToolRichLabel(
+  toolPart: Pick<GoogleCalendarToolUIPart, 'type' | 'input'>,
+): string {
+  const fallback = TOOL_META[extractToolName(toolPart.type)].label
+  const parsed = parseToolInput(toolPart)
+  if (!parsed) return fallback
+
+  switch (parsed.tool) {
+    case 'create_event': {
+      const title = parsed.data.title
+      if (!title) return fallback
+      return parsed.data.date ? `Create: ${title} on ${parsed.data.date}` : `Create: ${title}`
+    }
+    case 'update_event': {
+      const title = parsed.data.title
+      return title ? `Update: ${title}` : fallback
+    }
+    case 'delete_event': {
+      const title = parsed.data.title
+      return title ? `Delete: ${title}` : fallback
+    }
+    case 'search_events': {
+      const q = parsed.data.query
+      return q ? `Search: "${q}"` : fallback
+    }
+    case 'check_availability': {
+      return `Check availability: ${parsed.data.date} ${parsed.data.startTime}`
+    }
+  }
 }
 
 export function getGoogleCalendarToolLabel(

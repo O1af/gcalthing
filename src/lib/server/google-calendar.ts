@@ -82,7 +82,8 @@ export async function loadNearTermEvents(
     }),
   );
 
-  return perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
+  const events = perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
+  return enrichEventsWithAttendeeNames(accessToken, events);
 }
 
 export async function searchGoogleCalendarEvents(params: {
@@ -223,10 +224,6 @@ export async function deleteGoogleCalendarEvent(
 function buildGoogleEventPayload(request: WriteEventRequest) {
   const descriptionParts = [request.description?.trim()];
 
-  if (request.appendSourceDetails && request.sourceInputs.length > 0) {
-    descriptionParts.push("", "Source details", ...request.sourceInputs.map(formatSourceInput));
-  }
-
   const attendees = request.attendees.map((a) => ({
     displayName: a.name,
     email: a.email,
@@ -275,14 +272,6 @@ function buildGoogleEventPayload(request: WriteEventRequest) {
     },
     summary: request.title || "Untitled event",
   };
-}
-
-function formatSourceInput(input: WriteEventRequest["sourceInputs"][number]) {
-  if (input.kind === "text") {
-    return `- ${input.label}: ${input.text.slice(0, 300)}`;
-  }
-
-  return `- ${input.label}: ${input.filename ?? input.mediaType}`;
 }
 
 async function saveGoogleCalendarEvent(params: {
