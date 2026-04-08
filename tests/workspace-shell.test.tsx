@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import * as React from 'react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceShell } from '@/components/app/workspace-shell'
@@ -97,8 +97,17 @@ const setMessagesMock = vi.fn<
   })
 })
 
+const useChatMock = vi.fn((..._args: unknown[]) => ({
+  addToolApprovalResponse: addToolApprovalResponseMock,
+  messages: chatState.messages,
+  sendMessage: sendMessageMock,
+  setMessages: setMessagesMock,
+  status: chatState.status,
+  stop: stopMock,
+}))
+
 vi.mock('@ai-sdk/react', () => ({
-  useChat: () => {
+  useChat: (...args: unknown[]) => {
     const [state, setState] = React.useState(chatState)
 
     React.useEffect(() => {
@@ -108,13 +117,12 @@ vi.mock('@ai-sdk/react', () => ({
       }
     }, [])
 
+    const mockResult = useChatMock(...args)
+
     return {
-      addToolApprovalResponse: addToolApprovalResponseMock,
+      ...mockResult,
       messages: state.messages,
-      sendMessage: sendMessageMock,
-      setMessages: setMessagesMock,
       status: state.status,
-      stop: stopMock,
     }
   },
 }))
@@ -168,6 +176,7 @@ describe('WorkspaceShell', () => {
     addToolApprovalResponseMock.mockClear()
     setMessagesMock.mockClear()
     stopMock.mockClear()
+    useChatMock.mockClear()
     const addEventListenerMock = vi.fn<
       MediaQueryList['addEventListener']
     >()
@@ -204,7 +213,6 @@ describe('WorkspaceShell', () => {
   })
 
   it('keeps sign out in the sidebar for a signed-in viewer', async () => {
-    const user = userEvent.setup()
     const { container } = render(
       <WorkspaceShell
         viewer={{
@@ -218,8 +226,8 @@ describe('WorkspaceShell', () => {
 
     const topAuth = container.querySelector('[data-slot="workspace-top-auth"]')
     expect(topAuth?.textContent).toBe('')
-    await user.click(screen.getByRole('button', { name: /Olaf D/ }))
-    expect(screen.getByRole('menuitem', { name: 'Sign out' })).toBeTruthy()
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Olaf D/ }), { button: 0, ctrlKey: false })
+    expect(await screen.findByRole('menuitem', { name: 'Sign out' })).toBeTruthy()
   })
 
   it('submitting a message scrolls to the live edge without rendering a response runway', async () => {
@@ -305,6 +313,16 @@ describe('WorkspaceShell', () => {
     expect(addToolApprovalResponseMock).toHaveBeenCalledWith({
       approved: true,
       id: 'approval-1',
+    })
+  })
+
+  it('configures useChat to auto-submit after approval responses', () => {
+    render(<WorkspaceShell viewer={null} />)
+
+    expect(useChatMock).toHaveBeenCalled()
+    expect(useChatMock.mock.calls[0]?.[0]).toMatchObject({
+      id: 'workspace-chat',
+      sendAutomaticallyWhen: expect.any(Function),
     })
   })
 

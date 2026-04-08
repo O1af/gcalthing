@@ -13,6 +13,11 @@ export interface GoogleCalendarListEntry {
 export interface GoogleEventAttendee {
   email?: string;
   displayName?: string;
+  responseStatus?: string;
+  self?: boolean;
+  organizer?: boolean;
+  optional?: boolean;
+  comment?: string;
 }
 
 export interface GoogleCalendarEvent {
@@ -21,14 +26,23 @@ export interface GoogleCalendarEvent {
   description?: string;
   location?: string;
   recurringEventId?: string;
+  recurrence?: string[];
   status?: string;
+  created?: string;
+  updated?: string;
+  visibility?: string;
   attendees?: GoogleEventAttendee[];
-  organizer?: { email?: string; displayName?: string };
+  organizer?: { email?: string; displayName?: string; self?: boolean };
+  creator?: { email?: string; displayName?: string; self?: boolean };
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
   calendarId: string;
   calendarName: string;
   htmlLink?: string;
+  hangoutLink?: string;
+  conferenceData?: {
+    entryPoints?: Array<{ entryPointType?: string; uri?: string; label?: string }>;
+  };
 }
 
 export async function listWritableCalendars(accessToken: string) {
@@ -68,7 +82,8 @@ export async function loadNearTermEvents(
     }),
   );
 
-  return perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
+  const events = perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, 150);
+  return enrichEventsWithAttendeeNames(accessToken, events);
 }
 
 export async function searchGoogleCalendarEvents(params: {
@@ -109,7 +124,8 @@ export async function searchGoogleCalendarEvents(params: {
     }),
   );
 
-  return perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, limit);
+  const events = perCalendar.flat().sort(compareGoogleCalendarEvents).slice(0, limit);
+  return enrichEventsWithAttendeeNames(accessToken, events);
 }
 
 export async function getGoogleCalendarEvent(
@@ -208,10 +224,6 @@ export async function deleteGoogleCalendarEvent(
 function buildGoogleEventPayload(request: WriteEventRequest) {
   const descriptionParts = [request.description?.trim()];
 
-  if (request.appendSourceDetails && request.sourceInputs.length > 0) {
-    descriptionParts.push("", "Source details", ...request.sourceInputs.map(formatSourceInput));
-  }
-
   const attendees = request.attendees.map((a) => ({
     displayName: a.name,
     email: a.email,
@@ -262,14 +274,6 @@ function buildGoogleEventPayload(request: WriteEventRequest) {
   };
 }
 
-function formatSourceInput(input: WriteEventRequest["sourceInputs"][number]) {
-  if (input.kind === "text") {
-    return `- ${input.label}: ${input.text.slice(0, 300)}`;
-  }
-
-  return `- ${input.label}: ${input.filename ?? input.mediaType}`;
-}
-
 async function saveGoogleCalendarEvent(params: {
   accessToken: string;
   actionPerformed: "created" | "updated";
@@ -313,6 +317,117 @@ function enrichCalendarEvents(items: GoogleCalendarEvent[], calendar: GoogleCale
       calendarId: calendar.id,
       calendarName: calendar.summary,
     }));
+}
+
+async function enrichEventsWithAttendeeNames(
+  accessToken: string,
+  events: GoogleCalendarEvent[],
+): Promise<GoogleCalendarEvent[]> {
+  const emailsToResolve = new Set<string>();
+  for (const event of events) {
+    for (const attendee of event.attendees ?? []) {
+      if (attendee.email && !attendee.displayName) {
+        emailsToResolve.add(attendee.email);
+      }
+    }
+  }
+
+  if (emailsToResolve.size === 0) return events;
+
+  const nameMap = await resolveAttendeeNames(accessToken, [...emailsToResolve]);
+  if (nameMap.size === 0) return events;
+
+  return events.map((event) => ({
+    ...event,
+    attendees: event.attendees?.map((a) => ({
+      ...a,
+      displayName: a.displayName ?? (a.email ? nameMap.get(a.email.toLowerCase()) : undefined),
+    })),
+  }));
+}
+
+export async function resolveAttendeeNames(
+  accessToken: string,
+  emails: string[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (emails.length === 0) return result;
+
+  const normalizedEmails = emails.map((e) => e.toLowerCase());
+
+  // Phase 1: fetch all other contacts in one call and match client-side.
+  try {
+    const params = new URLSearchParams({ pageSize: "1000", readMask: "names,emailAddresses" });
+    const response = await fetch(
+      `https://people.googleapis.com/v1/otherContacts?${params}`,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as {
+        otherContacts?: Array<{
+          names?: Array<{ displayName?: string }>;
+          emailAddresses?: Array<{ value?: string }>;
+        }>;
+      };
+
+      for (const person of data.otherContacts ?? []) {
+        const name = person.names?.[0]?.displayName;
+        if (!name) continue;
+        for (const addr of person.emailAddresses ?? []) {
+          if (addr.value) result.set(addr.value.toLowerCase(), name);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — continue to per-email fallback.
+  }
+
+  // Phase 2: for any emails still unresolved, search individually (batched at 5).
+  const unresolved = normalizedEmails.filter((e) => !result.has(e));
+  if (unresolved.length === 0) return result;
+
+  const BATCH = 5;
+  for (let i = 0; i < unresolved.length; i += BATCH) {
+    const batch = unresolved.slice(i, i + BATCH);
+    await Promise.all(
+      batch.map(async (email) => {
+        try {
+          const params = new URLSearchParams({ query: email, readMask: "names,emailAddresses" });
+          const [otherRes, contactsRes] = await Promise.allSettled([
+            fetch(`https://people.googleapis.com/v1/otherContacts:search?${params}`, {
+              headers: { authorization: `Bearer ${accessToken}` },
+            }),
+            fetch(`https://people.googleapis.com/v1/people:searchContacts?${params}`, {
+              headers: { authorization: `Bearer ${accessToken}` },
+            }),
+          ]);
+
+          for (const settled of [otherRes, contactsRes]) {
+            if (settled.status !== "fulfilled" || !settled.value.ok) continue;
+            const data = (await settled.value.json()) as {
+              results?: Array<{
+                person?: {
+                  names?: Array<{ displayName?: string }>;
+                  emailAddresses?: Array<{ value?: string }>;
+                };
+              }>;
+            };
+            for (const item of data.results ?? []) {
+              const name = item.person?.names?.[0]?.displayName;
+              const personEmail = item.person?.emailAddresses?.[0]?.value;
+              if (name && personEmail) result.set(personEmail.toLowerCase(), name);
+            }
+            if (result.has(email)) break;
+          }
+        } catch {
+          // Non-fatal — fall back to email address display.
+        }
+      }),
+    );
+  }
+
+  return result;
 }
 
 async function googleFetch<T>(url: string, accessToken: string, init?: RequestInit): Promise<T> {
