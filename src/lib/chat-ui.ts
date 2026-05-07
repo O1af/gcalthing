@@ -33,6 +33,8 @@ export type AppChatMessage = UIMessage<
 
 export type GoogleCalendarToolUIPart = ToolUIPart<GoogleCalendarUITools>
 
+const SUPERSEDED_APPROVAL_DENIAL_REASON = 'Superseded by a new user message.'
+
 const GOOGLE_CALENDAR_TOOL_NAMES = new Set<GoogleCalendarToolName>([
   'search_events',
   'check_availability',
@@ -71,6 +73,42 @@ export function getMessageGoogleCalendarToolParts(
   message: AppChatMessage,
 ): GoogleCalendarToolUIPart[] {
   return message.parts.filter(isGoogleCalendarToolPart)
+}
+
+export function denyPendingGoogleCalendarApprovals(
+  messages: AppChatMessage[],
+): AppChatMessage[] {
+  let changed = false
+
+  const nextMessages = messages.map((message) => {
+    if (message.role !== 'assistant') {
+      return message
+    }
+
+    let messageChanged = false
+    const parts = message.parts.map((part) => {
+      if (!isGoogleCalendarToolPart(part) || part.state !== 'approval-requested') {
+        return part
+      }
+
+      changed = true
+      messageChanged = true
+
+      return {
+        ...part,
+        approval: {
+          approved: false,
+          id: part.approval.id,
+          reason: SUPERSEDED_APPROVAL_DENIAL_REASON,
+        },
+        state: 'output-denied',
+      } as GoogleCalendarToolUIPart
+    })
+
+    return messageChanged ? { ...message, parts } : message
+  })
+
+  return changed ? nextMessages : messages
 }
 
 const TOOL_PREFIX = 'tool-'

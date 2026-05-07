@@ -88,6 +88,7 @@ import {
 import type { AppChatMessage } from "@/lib/chat-ui";
 import { cn } from "@/lib/utils";
 import {
+  denyPendingGoogleCalendarApprovals,
   getGoogleCalendarToolLabel,
   getGoogleCalendarSignInDetail,
   getGoogleCalendarToolRichLabel,
@@ -161,21 +162,23 @@ export function WorkspaceShell({ viewer }: WorkspaceShellProps) {
         return;
       }
 
+      setMessages(denyPendingGoogleCalendarApprovals);
       void Promise.resolve(conversation.scrollToBottom("smooth"));
       await sendMessage({
         files: message.files,
         text: message.text,
       });
     },
-    [conversation, sendMessage],
+    [conversation, sendMessage, setMessages],
   );
 
   const handleSuggestionClick = useCallback(
     (text: string) => {
+      setMessages(denyPendingGoogleCalendarApprovals);
       void Promise.resolve(conversation.scrollToBottom("smooth"));
       void sendMessage({ files: [], text });
     },
-    [conversation, sendMessage],
+    [conversation, sendMessage, setMessages],
   );
 
   const hasContent = messages.length > 0;
