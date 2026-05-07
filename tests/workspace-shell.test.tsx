@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceShell } from '@/components/app/workspace-shell'
-import type { AppChatMessage } from '@/lib/chat-ui'
+import type { AppChatMessage, GoogleCalendarToolUIPart } from '@/lib/chat-ui'
 
 type MockChatState = {
   messages: AppChatMessage[]
@@ -70,6 +70,27 @@ function createTextMessage(
   } as AppChatMessage
 }
 
+function createApprovalMessage(): AppChatMessage {
+  return {
+    id: 'assistant-approval',
+    metadata: undefined,
+    parts: [
+      {
+        approval: { id: 'approval-1' },
+        input: {
+          date: '2026-04-05',
+          startTime: '12:00',
+          title: 'Lunch',
+        },
+        state: 'approval-requested',
+        toolCallId: 'tool-call-approval',
+        type: 'tool-create_event',
+      },
+    ],
+    role: 'assistant',
+  } as AppChatMessage
+}
+
 const sendMessageMock = vi.fn<(message: { text: string }) => Promise<void>>(async ({ text }) => {
   emitChatState({
     messages: [...chatState.messages, createTextMessage('user', text)],
@@ -97,7 +118,16 @@ const setMessagesMock = vi.fn<
   })
 })
 
-const useChatMock = vi.fn((..._args: unknown[]) => ({
+const useChatMock = vi.fn<
+  (..._args: unknown[]) => {
+    addToolApprovalResponse: typeof addToolApprovalResponseMock
+    messages: AppChatMessage[]
+    sendMessage: typeof sendMessageMock
+    setMessages: typeof setMessagesMock
+    status: MockChatState['status']
+    stop: typeof stopMock
+  }
+>((..._args: unknown[]) => ({
   addToolApprovalResponse: addToolApprovalResponseMock,
   messages: chatState.messages,
   sendMessage: sendMessageMock,
@@ -283,26 +313,7 @@ describe('WorkspaceShell', () => {
   it('renders approval controls for approval-requested tools', async () => {
     const user = userEvent.setup()
     emitChatState({
-      messages: [
-        {
-          id: 'assistant-approval',
-          metadata: undefined,
-          parts: [
-            {
-              approval: { id: 'approval-1' },
-              input: {
-                date: '2026-04-05',
-                startTime: '12:00',
-                title: 'Lunch',
-              },
-              state: 'approval-requested',
-              toolCallId: 'tool-call-approval',
-              type: 'tool-create_event',
-            },
-          ],
-          role: 'assistant',
-        } as AppChatMessage,
-      ],
+      messages: [createApprovalMessage()],
       status: 'ready',
     })
 
@@ -314,6 +325,38 @@ describe('WorkspaceShell', () => {
       approved: true,
       id: 'approval-1',
     })
+  })
+
+  it('denies pending approval requests before sending a follow-up message', async () => {
+    const user = userEvent.setup()
+    emitChatState({
+      messages: [createApprovalMessage()],
+      status: 'ready',
+    })
+
+    const { container } = render(<WorkspaceShell viewer={null} />)
+    const textbox = container.querySelector('textarea')
+    expect(textbox).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
+
+    await user.type(textbox!, 'What else is on my calendar?')
+    await user.click(screen.getByRole('button', { name: 'Submit' }))
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith({
+        files: [],
+        text: 'What else is on my calendar?',
+      })
+    })
+
+    const toolPart = chatState.messages[0]?.parts[0] as GoogleCalendarToolUIPart
+    expect(toolPart.state).toBe('output-denied')
+    expect(toolPart.approval).toMatchObject({
+      approved: false,
+      id: 'approval-1',
+    })
+    expect(addToolApprovalResponseMock).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 
   it('configures useChat to auto-submit after approval responses', () => {
